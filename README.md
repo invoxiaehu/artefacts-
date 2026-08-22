@@ -46,4 +46,4 @@ npx http-server dist   # ou : python3 -m http.server -d dist 8123
 | Artefact | Description |
 |---|---|
 | [`lemot/`](https://invoxiaehu.github.io/artefacts-/lemot/) | **Le Mot** — jeu de lettres quotidien en français (5 ou 6 lettres, six essais, correction à la marge façon dictée, modes mot du jour / partie libre / mot secret). |
-| [`carnet-accords/`](https://invoxiaehu.github.io/artefacts-/carnet-accords/) | **Carnet d'accords** — carnet de grilles pour musiciens : import de PDF (paroles et accords alignés via pdf.js + ChordSheetJS), transposition par demi-tons, défilement automatique, sauvegarde locale. |
+| [`carnet-accords/`](https://invoxiaehu.github.io/artefacts-/carnet-accords/) | **Carnet d'accords** — carnet de grilles pour musiciens : import de PDF (paroles et accords alignés via pdf.js + ChordSheetJS), transposition par demi-tons, défilement automatique, sauvegarde locale et partage du carnet complet dans le fragment d'URL (`#v=1&data=`, gzip + Base64URL, sans backend). |

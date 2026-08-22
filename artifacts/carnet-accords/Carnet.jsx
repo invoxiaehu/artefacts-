@@ -319,6 +319,117 @@ async function saveLibrary(d) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Partage par URL : tout le carnet tient dans le fragment             */
+/* #v=1&data=<base64url(gzip(json))> — après le #, rien ne part vers   */
+/* le serveur ; gzip vient des CompressionStream natifs du navigateur. */
+/* ------------------------------------------------------------------ */
+
+const SHARE_VERSION = "1";
+
+const b64uEncode = (bytes) => {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+const b64uDecode = (str) => {
+  const s = str.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(s + "=".repeat((4 - (s.length % 4)) % 4));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+};
+
+async function gzipBytes(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function gunzipBytes(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** Valide et normalise un carnet venu de l'extérieur (URL, code collé,
+ *  JSON) : on n'accepte que des grilles exploitables, jamais de champs
+ *  inconnus, et les ids sont toujours régénérés. */
+function normalizeLibrary(data) {
+  const src = Array.isArray(data) ? { songs: data } : data;
+  if (!src || !Array.isArray(src.songs)) throw new Error("structure inattendue");
+  const songs = src.songs
+    .filter((s) => s && typeof s.body === "string" && s.body.trim())
+    .map((s) => ({
+      id: uid(),
+      title: String(s.title || "Sans titre"),
+      artist: String(s.artist || ""),
+      body: s.body,
+      steps: Math.max(-6, Math.min(6, Number(s.steps) || 0)),
+    }));
+  if (!songs.length) throw new Error("aucune grille exploitable");
+  const lib = { songs };
+  if (typeof src.showChords === "boolean") lib.showChords = src.showChords;
+  if (Number(src.size)) lib.size = Number(src.size);
+  if (Number(src.speed)) lib.speed = Number(src.speed);
+  return lib;
+}
+
+async function encodeShare(library) {
+  if (typeof CompressionStream !== "function") {
+    throw new Error("CompressionStream indisponible dans ce navigateur");
+  }
+  const json = JSON.stringify({
+    songs: library.songs.map(({ id, ...rest }) => rest),
+    showChords: library.showChords,
+    size: library.size,
+    speed: library.speed,
+  });
+  const raw = new TextEncoder().encode(json);
+  const packed = await gzipBytes(raw);
+  const data = b64uEncode(packed);
+  return { data, hash: `#v=${SHARE_VERSION}&data=${data}`, rawBytes: raw.length, packedBytes: packed.length };
+}
+
+async function decodeShareData(data) {
+  const bytes = b64uDecode(data.trim());
+  let jsonBytes = bytes;
+  if (bytes.length > 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    if (typeof DecompressionStream !== "function") {
+      throw new Error("DecompressionStream indisponible dans ce navigateur");
+    }
+    jsonBytes = await gunzipBytes(bytes);
+  }
+  return normalizeLibrary(JSON.parse(new TextDecoder().decode(jsonBytes)));
+}
+
+/** Retrouve le paramètre data dans ce qu'on lui donne : un fragment,
+ *  une URL complète collée, ou le code nu. */
+function extractShareData(text) {
+  const t = (text || "").trim();
+  if (!t) return null;
+  const m = /(?:^|[#&?])data=([A-Za-z0-9_-]+)/.exec(t);
+  if (m) return m[1];
+  if (/^[A-Za-z0-9_-]{16,}$/.test(t)) return t;
+  return null;
+}
+
+/** null si le fragment ne transporte pas de données ; jette si les
+ *  données sont d'une version inconnue ou corrompues. */
+async function libraryFromHash(hash) {
+  const h = (hash || "").replace(/^#/, "");
+  if (!/(^|&)data=/.test(h)) return null;
+  const params = new URLSearchParams(h);
+  const v = params.get("v") || SHARE_VERSION;
+  if (v !== SHARE_VERSION) throw new Error(`lien d'une version plus récente (v=${v})`);
+  const data = params.get("data");
+  if (!data) return null;
+  return decodeShareData(data);
+}
+
+const fmtBytes = (n) => (n < 1024 ? `${n} o` : `${(n / 1024).toFixed(1)} Ko`);
+const mergeByTitle = (prev, added) => {
+  const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return [...prev.filter((s) => !added.some((a) => norm(a.title) === norm(s.title))), ...added];
+};
+
+/* ------------------------------------------------------------------ */
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@700&display=swap');
@@ -405,6 +516,7 @@ const CSS = `
 .btn.ghost { color:var(--muted); background:none; }
 .btn.ghost:hover { color:var(--ink); }
 .btn.danger { color:var(--hot); border-color:rgba(200,80,60,.4); background:none; }
+.btn:disabled { opacity:.45; cursor:default; }
 .reportline { font-family:'JetBrains Mono'; font-size:10.5px; line-height:1.6; color:var(--muted); margin-top:6px; word-break:break-word; }
 .reportline b { color:var(--amber); }
 .warnbar { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--hot);
@@ -482,40 +594,115 @@ function Editor({ draft, setDraft, onSave, onCancel, onDelete }) {
   );
 }
 
-function Transfer({ songs, engine, onImport, onClose }) {
+function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
+  const { songs } = library;
   const [text, setText] = useState("");
   const [msg, setMsg] = useState("");
+  const [urlMsg, setUrlMsg] = useState("");
+  const [share, setShare] = useState(null);
   const json = useMemo(() => JSON.stringify(songs.map(({ id, ...r }) => r), null, 1), [songs]);
-  const doImport = () => {
+
+  useEffect(() => {
+    let alive = true;
+    setShare(null);
+    setUrlMsg("");
+    if (!songs.length) { setShare({ error: "le carnet est vide" }); return; }
+    (async () => {
+      try {
+        const s = await encodeShare(library);
+        const url = window.location.origin + window.location.pathname + window.location.search + s.hash;
+        if (alive) setShare({ ...s, url });
+      } catch (e) {
+        if (alive) setShare({ error: String(e && e.message ? e.message : e) });
+      }
+    })();
+    return () => { alive = false; };
+  }, [library, songs.length]);
+
+  const doImport = async () => {
+    const t = text.trim();
+    if (!t) return;
     try {
-      const data = JSON.parse(text);
-      if (!Array.isArray(data)) throw new Error();
-      const clean = data.filter((s) => s && typeof s.body === "string").map((s) => ({
-        id: uid(), title: String(s.title || "Sans titre"), artist: String(s.artist || ""),
-        body: s.body, steps: Number(s.steps) || 0,
-      }));
-      if (!clean.length) throw new Error();
-      onImport(clean);
-      setMsg(`${clean.length} grille(s) ajoutée(s).`);
+      let lib;
+      if (/^[\[{]/.test(t)) {
+        lib = normalizeLibrary(JSON.parse(t));
+      } else {
+        const data = extractShareData(t);
+        if (!data) throw new Error();
+        lib = await decodeShareData(data);
+      }
+      onImport(lib.songs, lib);
+      setMsg(`${lib.songs.length} grille(s) ajoutée(s).`);
       setText("");
     } catch {
-      setMsg("Texte non reconnu. Attendu : une liste JSON avec title, artist et body.");
+      setMsg("Texte non reconnu. Attendu : une liste JSON avec title, artist et body, ou un code/URL généré par « Partager par URL ».");
     }
   };
+
+  const copyUrl = async () => {
+    if (!share || share.error) return;
+    onShareUrl(share.hash);
+    try {
+      await navigator.clipboard.writeText(share.url);
+      setUrlMsg(`URL copiée (${share.url.length.toLocaleString("fr-FR")} caractères) — la barre d'adresse contient aussi vos données, la page peut être mise en favori telle quelle.`);
+    } catch {
+      setUrlMsg("Copie refusée par le navigateur : sélectionnez l'URL ci-dessus et copiez-la à la main. La barre d'adresse contient déjà vos données.");
+    }
+  };
+
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  const isMac = !isIOS && /Mac/.test(navigator.userAgent);
+
   return (
     <div className="form">
       <div className="forminner">
         <div className="field">
-          <label>Sauvegarde du carnet</label>
+          <label htmlFor="shareurl">Partager par URL — toutes les données voyagent après le #</label>
+          <textarea id="shareurl" readOnly style={{ minHeight: 90, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+            value={share ? (share.error ? `Indisponible : ${share.error}` : share.url) : "Préparation…"}
+            onFocus={(e) => e.target.select()} />
+        </div>
+        {share && !share.error && (
+          <p className="reportline">
+            JSON <b>{fmtBytes(share.rawBytes)}</b> → gzip <b>{fmtBytes(share.packedBytes)}</b> → URL
+            de <b>{share.url.length.toLocaleString("fr-FR")}</b> caractères
+            {share.url.length > 30000 && " — très longue : certaines messageries ou navigateurs tronquent au-delà"}
+          </p>
+        )}
+        <div className="actions">
+          <button className="btn primary" disabled={!share || !!share.error} onClick={copyUrl}>Copier l'URL avec mes données</button>
+          <button className="btn ghost" disabled={!share || !!share.error}
+            onClick={() => { navigator.clipboard?.writeText(share.data); setUrlMsg("Code compressé copié."); }}>Copier le code seul</button>
+        </div>
+        {urlMsg && <p className="hint">{urlMsg}</p>}
+        <div className="field">
+          <label>Retrouver ce carnet plus tard</label>
+          <p className="hint">
+            Après « Copier l'URL avec mes données », la barre d'adresse porte le carnet complet et reste à jour.{" "}
+            {isIOS ? (
+              <>Sur iPhone/iPad, iOS n'autorise aucun bouton à le faire tout seul : touchez <b>Partager</b> puis
+              <b> « Sur l'écran d'accueil »</b> (ou « Ajouter un signet ») — l'icône créée rouvrira le carnet avec toutes vos grilles.</>
+            ) : isAndroid ? (
+              <>Sur Android : menu <b>⋮</b> puis <b>« Ajouter à l'écran d'accueil »</b>, ou l'étoile pour les favoris.</>
+            ) : (
+              <>Appuyez sur <b>{isMac ? "⌘D" : "Ctrl+D"}</b> pour ajouter la page aux favoris — les navigateurs
+              modernes n'autorisent plus les sites à le déclencher eux-mêmes.</>
+            )}
+          </p>
+        </div>
+        <div className="field">
+          <label>Sauvegarde du carnet (JSON)</label>
           <textarea readOnly value={json} style={{ minHeight: 140 }} onFocus={(e) => e.target.select()} />
         </div>
         <div className="actions">
           <button className="btn ghost" onClick={() => navigator.clipboard?.writeText(json)}>Copier</button>
         </div>
         <div className="field">
-          <label htmlFor="imp">Restaurer ou ajouter</label>
-          <textarea id="imp" value={text} placeholder='[{"title":"…","artist":"…","body":"…"}]' style={{ minHeight: 140 }}
-            onChange={(e) => setText(e.target.value)} />
+          <label htmlFor="imp">Restaurer ou ajouter — JSON, code compressé ou URL partagée</label>
+          <textarea id="imp" value={text} placeholder={'[{"title":"…","artist":"…","body":"…"}]  ou  https://…#v=1&data=…'}
+            style={{ minHeight: 140 }} onChange={(e) => setText(e.target.value)} />
         </div>
         {msg && <p className="hint">{msg}</p>}
         <div className="actions">
@@ -549,6 +736,7 @@ export default function Carnet() {
   const [report, setReport] = useState([]);
   const sheetRef = useRef(null);
   const fileRef = useRef(null);
+  const syncHashRef = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -558,14 +746,26 @@ export default function Carnet() {
         new Promise((r) => setTimeout(() => r(null), 2500)),
       ]);
       if (!alive) return;
-      if (data && Array.isArray(data.songs)) {
-        setSongs(data.songs);
-        if (typeof data.showChords === "boolean") setShowChords(data.showChords);
-        if (data.size) setSize(data.size);
-        if (data.speed) setSpeed(data.speed);
-      } else {
-        setSongs([]);
+      let carnet = data && Array.isArray(data.songs) ? data : { songs: [] };
+      // Un fragment #v=1&data=… l'emporte : c'est le sens d'ouvrir un lien
+      // partagé. Les grilles locales de même titre sont remplacées, les
+      // autres conservées.
+      try {
+        const shared = await libraryFromHash(window.location.hash);
+        if (!alive) return;
+        if (shared) {
+          carnet = { ...carnet, ...shared, songs: mergeByTitle(carnet.songs, shared.songs) };
+          syncHashRef.current = true;
+          setStatus(`${shared.songs.length} grille(s) chargée(s) depuis l'URL.`);
+        }
+      } catch (e) {
+        setStatus("Le lien contenait des données illisibles ou incompatibles — carnet local conservé. ("
+          + String(e && e.message ? e.message : e).slice(0, 120) + ")");
       }
+      setSongs(carnet.songs);
+      if (typeof carnet.showChords === "boolean") setShowChords(carnet.showChords);
+      if (carnet.size) setSize(carnet.size);
+      if (carnet.speed) setSpeed(carnet.speed);
       setReady(true);
       const lib = await loadChordSheetJS();
       if (!alive) return;
@@ -576,6 +776,31 @@ export default function Carnet() {
   }, []);
 
   useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed }); }, [songs, showChords, size, speed, ready]);
+
+  // La barre d'adresse n'est réécrite qu'une fois le partage activé
+  // (ouverture d'un lien #data=… ou « Copier l'URL ») : elle reflète alors
+  // le carnet en continu, et un favori pris à n'importe quel moment —
+  // Ctrl+D, écran d'accueil iOS — embarque les données à jour.
+  useEffect(() => {
+    if (!ready || !syncHashRef.current) return;
+    let alive = true;
+    (async () => {
+      try {
+        if (!songs.length) {
+          window.history.replaceState(null, "", window.location.pathname + window.location.search);
+          return;
+        }
+        const { hash } = await encodeShare({ songs, showChords, size, speed });
+        if (alive && window.location.hash !== hash) window.history.replaceState(null, "", hash);
+      } catch { /* barre d'adresse laissée telle quelle */ }
+    })();
+    return () => { alive = false; };
+  }, [songs, showChords, size, speed, ready]);
+
+  const shareUrl = (hash) => {
+    syncHashRef.current = true;
+    window.history.replaceState(null, "", hash);
+  };
 
   // Défilement : vitesse en pixels par seconde, indépendante du rafraîchissement.
   // Le doigt met la boucle en pause puis elle repart d'où l'on s'est arrêté.
@@ -649,11 +874,7 @@ export default function Carnet() {
     }
     setReport(lines);
     if (added.length) {
-      const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-      setSongs((prev) => {
-        const keep = prev.filter((s) => !added.some((a) => norm(a.title) === norm(s.title)));
-        return [...keep, ...added];
-      });
+      setSongs((prev) => mergeByTitle(prev, added));
       setStatus(`${added.length} PDF importé(s).`);
       if (added.length === 1) openSong(added[0].id);
     } else {
@@ -679,6 +900,15 @@ export default function Carnet() {
     setView("song");
   };
   const remove = () => { setSongs(songs.filter((s) => s.id !== current.id)); setCurrentId(null); setView("lib"); };
+  const importLibrary = (list, settings) => {
+    setSongs((prev) => mergeByTitle(prev, list));
+    if (settings) {
+      if (typeof settings.showChords === "boolean") setShowChords(settings.showChords);
+      if (settings.size) setSize(settings.size);
+      if (settings.speed) setSpeed(settings.speed);
+    }
+  };
+  const library = useMemo(() => ({ songs, showChords, size, speed }), [songs, showChords, size, speed]);
   const shift = (n) => setSongs(songs.map((s) => (s.id === current.id ? { ...s, steps: Math.max(-6, Math.min(6, (s.steps || 0) + n)) } : s)));
 
   const engine = CS ? "ChordSheetJS 15.6" : csTried ? "lecteur interne (CDN inaccessible)" : "chargement…";
@@ -816,7 +1046,7 @@ export default function Carnet() {
       )}
 
       {view === "transfer" && (
-        <Transfer songs={songs} engine={engine} onClose={() => setView("lib")} onImport={(list) => setSongs((prev) => [...prev, ...list])} />
+        <Transfer library={library} engine={engine} onClose={() => setView("lib")} onImport={importLibrary} onShareUrl={shareUrl} />
       )}
     </div>
   );
