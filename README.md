@@ -23,6 +23,12 @@ build.mjs              Assemble le site dans dist/ (copie site/, bundle chaque a
 
 Puis pousser sur `main` : le workflow construit et déploie tout seul.
 
+## Déploiement
+
+`main` contient les sources ; le workflow construit `dist/` et le publie
+(force-push) sur la branche générée `gh-pages`, que GitHub Pages sert. Ne pas
+éditer `gh-pages` à la main : elle est réécrite à chaque déploiement.
+
 ## Développement local
 
 ```bash
