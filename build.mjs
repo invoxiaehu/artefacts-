@@ -3,7 +3,8 @@
 //  - artifacts/<nom>/ → chaque dossier contenant un main.jsx est bundlé par esbuild
 //                       vers dist/<nom>/app.js ; son index.html est copié à côté.
 import { build } from "esbuild";
-import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 const DIST = "dist";
@@ -31,7 +32,6 @@ for (const name of names) {
   }
   const out = path.join(DIST, name);
   await mkdir(out, { recursive: true });
-  await cp(path.join(dir, "index.html"), path.join(out, "index.html"));
   await build({
     entryPoints: [entry],
     bundle: true,
@@ -41,7 +41,15 @@ for (const name of names) {
     outfile: path.join(out, "app.js"),
     logLevel: "info",
   });
-  console.log(`✓ artefact « ${name} » → ${out}/`);
+  // Le HTML référence app.js?v=<hash du contenu> : le cache navigateur ne
+  // peut plus servir un vieux JS avec un HTML plus récent (GitHub Pages
+  // met les fichiers en cache ~10 min).
+  const js = await readFile(path.join(out, "app.js"));
+  const v = createHash("sha256").update(js).digest("hex").slice(0, 8);
+  const html = (await readFile(path.join(dir, "index.html"), "utf8"))
+    .replace(/\.\/app\.js/g, `./app.js?v=${v}`);
+  await writeFile(path.join(out, "index.html"), html);
+  console.log(`✓ artefact « ${name} » → ${out}/ (v=${v})`);
 }
 
 console.log("Build terminé → dist/");

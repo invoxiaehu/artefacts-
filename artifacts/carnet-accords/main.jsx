@@ -14,7 +14,20 @@ if (!window.storage) {
       localStorage.setItem("carnet-accords:" + key, value);
       return { key, value };
     },
+    async remove(key) {
+      localStorage.removeItem("carnet-accords:" + key);
+    },
   };
+}
+
+// ?maj=<timestamp> ne sert qu'à contourner le cache lors d'un rechargement
+// forcé (Réglages) : on le retire de la barre d'adresse une fois chargé.
+if (/[?&]maj=/.test(window.location.search)) {
+  const params = new URLSearchParams(window.location.search);
+  params.delete("maj");
+  const qs = params.toString();
+  window.history.replaceState(null, "",
+    window.location.pathname + (qs ? "?" + qs : "") + window.location.hash);
 }
 
 createRoot(document.getElementById("root")).render(<Carnet />);

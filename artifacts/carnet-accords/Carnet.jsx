@@ -317,6 +317,16 @@ async function loadLibrary() {
 async function saveLibrary(d) {
   try { await window.storage.set(KEY, JSON.stringify(d)); } catch { /* hors ligne */ }
 }
+async function clearLibrary() {
+  try {
+    if (window.storage.remove) await window.storage.remove(KEY);
+    else await window.storage.set(KEY, JSON.stringify({ songs: [] }));
+  } catch { /* stockage indisponible */ }
+}
+/** Recharge la page en contournant le cache HTTP : l'HTML revient du
+ *  serveur, et comme il référence app.js?v=<hash>, le JS suit. */
+const reloadFresh = (keepHash) =>
+  window.location.replace(window.location.pathname + "?maj=" + Date.now() + (keepHash ? window.location.hash : ""));
 
 /* ------------------------------------------------------------------ */
 /* Partage par URL : tout le carnet tient dans le fragment             */
@@ -994,13 +1004,12 @@ export default function Carnet() {
     if (!pool.length) return;
     openSong(pool[Math.floor(Math.random() * pool.length)].id);
   };
-  const resetAll = () => {
-    if (!window.confirm("Tout effacer sur cet appareil ? Les grilles et les réglages stockés localement seront supprimés. Copiez d'abord l'URL de partage si vous voulez pouvoir revenir en arrière.")) return;
+  const resetAll = async () => {
+    if (!window.confirm("Tout effacer sur cet appareil ? Les grilles et les réglages stockés localement seront supprimés, puis l'application rechargera sa dernière version. Copiez d'abord l'URL de partage si vous voulez pouvoir revenir en arrière.")) return;
     syncHashRef.current = false;
-    window.history.replaceState(null, "", window.location.pathname + window.location.search);
-    setSongs([]); setCurrentId(null); setQuery(""); setStatus(""); setReport([]);
-    setShowChords(true); setSort("title"); setSize(17); setSpeed(3); setScrolling(false);
-    setView("lib");
+    setReady(false); // gèle la sauvegarde automatique pendant l'effacement
+    await clearLibrary();
+    reloadFresh(false); // repart à neuf, sans le fragment ni le cache
   };
   const importLibrary = (list, settings) => {
     setSongs((prev) => mergeByTitle(prev, list));
@@ -1015,6 +1024,11 @@ export default function Carnet() {
   const shift = (n) => setSongs(songs.map((s) => (s.id === current.id ? { ...s, steps: Math.max(-6, Math.min(6, (s.steps || 0) + n)) } : s)));
 
   const engine = CS ? "ChordSheetJS 15.6" : csTried ? "lecteur interne (CDN inaccessible)" : "chargement…";
+  const appVersion = useMemo(() => {
+    const s = document.querySelector('script[src*="app.js"]');
+    const m = s && /[?&]v=([0-9a-f]+)/.exec(s.getAttribute("src") || "");
+    return m ? m[1] : "dev";
+  }, []);
 
   return (
     <div className="cb">
@@ -1213,6 +1227,17 @@ export default function Carnet() {
         <div className="form">
           <div className="forminner">
             <div className="field">
+              <label>Mise à jour</label>
+              <p className="hint">
+                Version du code : <b>{appVersion}</b>. Si l'application semble en retard sur la
+                dernière version publiée, ce bouton recharge la page en contournant le cache du
+                navigateur — sans toucher à vos données.
+              </p>
+            </div>
+            <div className="actions">
+              <button className="btn" onClick={() => reloadFresh(true)}>Recharger la dernière version</button>
+            </div>
+            <div className="field">
               <label>Stockage</label>
               <p className="hint">
                 Le carnet vit uniquement dans ce navigateur, sur cet appareil — aucun serveur.
@@ -1224,9 +1249,9 @@ export default function Carnet() {
             <div className="field">
               <label>Réinitialiser</label>
               <p className="hint">
-                Efface les grilles et les réglages stockés sur cet appareil, et retire les
-                données de la barre d'adresse. Les autres appareils et les URL déjà copiées
-                ne sont pas touchés.
+                Efface les grilles et les réglages stockés sur cet appareil, retire les
+                données de la barre d'adresse, puis recharge l'application depuis le serveur
+                (cache contourné). Les autres appareils et les URL déjà copiées ne sont pas touchés.
               </p>
             </div>
             <div className="actions">
