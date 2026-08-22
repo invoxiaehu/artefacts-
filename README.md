@@ -23,6 +23,10 @@ build.mjs              Assemble le site dans dist/ (copie site/, bundle chaque a
 
 Puis pousser sur `main` : le workflow construit et déploie tout seul.
 
+> Sessions Claude Code : la skill locale `ajouter-artefact`
+> (`.claude/skills/ajouter-artefact/SKILL.md`) décrit ce workflow de bout en bout
+> (intégration d'un code collé, build, test navigateur, push, vérification Pages).
+
 ## Déploiement
 
 `main` contient les sources ; le workflow construit `dist/` et le publie
