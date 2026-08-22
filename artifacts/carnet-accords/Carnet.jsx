@@ -824,6 +824,7 @@ export default function Carnet() {
       if (carnet.size) setSize(carnet.size);
       if (carnet.speed) setSpeed(carnet.speed);
       if (carnet.sort === "title" || carnet.sort === "artist") setSort(carnet.sort);
+      if (typeof carnet.barOpen === "boolean") setBarOpen(carnet.barOpen);
       setReady(true);
       const lib = await loadChordSheetJS();
       if (!alive) return;
@@ -833,7 +834,7 @@ export default function Carnet() {
     return () => { alive = false; };
   }, []);
 
-  useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort }); }, [songs, showChords, size, speed, sort, ready]);
+  useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort, barOpen }); }, [songs, showChords, size, speed, sort, barOpen, ready]);
 
   // La barre d'adresse n'est réécrite qu'une fois le partage activé
   // (ouverture d'un lien #data=… ou « Copier l'URL ») : elle reflète alors
@@ -984,7 +985,7 @@ export default function Carnet() {
   };
 
   const openSong = (id) => {
-    setCurrentId(id); setView("song"); setScrolling(false); setReviseMode(null); setRevealed(0); setBarOpen(true);
+    setCurrentId(id); setView("song"); setScrolling(false); setReviseMode(null); setRevealed(0);
     requestAnimationFrame(() => sheetRef.current && (sheetRef.current.scrollTop = 0));
   };
   const startNew = () => { setCurrentId(null); setDraft({ title: "", artist: "", body: "" }); setView("edit"); };
