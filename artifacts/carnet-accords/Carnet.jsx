@@ -509,6 +509,18 @@ const CSS = `
 .sec:first-child { margin-top:0; }
 .sec::after { content:''; flex:1; height:1px; background:var(--line); }
 .row { display:flex; flex-wrap:wrap; align-items:flex-end; margin-bottom:2px; }
+.row, .plain { transition:filter .4s, opacity .4s; }
+.masked { filter:blur(8px); opacity:.35; user-select:none; pointer-events:none; }
+.revbar { position:absolute; left:0; right:0; bottom:0; padding:10px 16px 14px; display:flex; flex-direction:column; gap:9px;
+  background:linear-gradient(to top, var(--bg) 72%, transparent); }
+.revbar .inner { max-width:760px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:9px; }
+.revprog { display:flex; align-items:center; gap:10px; font-family:'JetBrains Mono'; font-size:10px;
+  letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+.revprog b { color:var(--amber); }
+.revtrack { flex:1; height:3px; background:var(--line); border-radius:2px; overflow:hidden; }
+.revfill { height:100%; background:var(--amber); transition:width .3s; }
+.revrow { display:flex; gap:8px; align-items:stretch; }
+.revmain { flex:1; padding:14px 16px; font-size:17px; }
 .seg { display:inline-flex; flex-direction:column; }
 .ch { font-family:'JetBrains Mono'; font-weight:700; color:var(--amber); font-size:.74em; line-height:1.5; white-space:pre; padding-right:8px; }
 .ly { white-space:pre-wrap; line-height:1.42; }
@@ -545,20 +557,29 @@ function VU() {
   return <div className="vu" aria-hidden="true">{h.map((v, i) => <i key={i} className={i < 5 ? "on" : ""} style={{ height: v }} />)}</div>;
 }
 
-function Sheet({ blocks, showChords, size }) {
+/** maskFrom : en révision, ordinal (parmi les lignes révélables) à partir
+ *  duquel le texte est flouté. Les sections et blancs restent visibles :
+ *  la structure guide, le texte se mérite. */
+function Sheet({ blocks, showChords, size, maskFrom }) {
+  let ord = -1;
   return (
     <div className="sheetinner" style={{ fontSize: size }}>
       {blocks.map((b, i) => {
         if (b.type === "section") return <div className="sec" key={i}>{b.label}</div>;
         if (b.type === "blank") return <div className="gap" key={i} />;
-        if (b.type === "text") return <div className="plain" key={i}>{b.text}</div>;
+        ord++;
+        const masked = maskFrom != null && ord >= maskFrom;
+        const frontier = maskFrom != null && ord === maskFrom - 1;
+        const cls = masked ? " masked" : "";
+        const fr = frontier ? "1" : undefined;
+        if (b.type === "text") return <div className={"plain" + cls} data-frontier={fr} key={i}>{b.text}</div>;
         if (!showChords) {
           // Les blancs venaient de l'alignement des accords : on les résorbe.
           const text = b.cells.map((c) => c.lyrics).join("").replace(/\s+/g, " ").trim();
-          return text ? <div className="plain" key={i}>{text}</div> : null;
+          return text ? <div className={"plain" + cls} data-frontier={fr} key={i}>{text}</div> : <div className="gap" key={i} />;
         }
         return (
-          <div className="row" key={i}>
+          <div className={"row" + cls} data-frontier={fr} key={i}>
             {b.cells.map((c, j) => (
               <span className="seg" key={j}>
                 <span className="ch">{c.chord}</span>
@@ -745,6 +766,9 @@ export default function Carnet() {
   const [size, setSize] = useState(17);
   const [scrolling, setScrolling] = useState(false);
   const [speed, setSpeed] = useState(3);
+  const [reviseMode, setReviseMode] = useState(null); // null | "seq" | "random"
+  const [reviseStart, setReviseStart] = useState(0);
+  const [revealed, setRevealed] = useState(0);
   const draggingRef = useRef(false);
   const resumeRef = useRef(null);
   const [status, setStatus] = useState("");
@@ -860,6 +884,47 @@ export default function Carnet() {
     return blocksFallback(current.body, steps, flats);
   }, [current, steps, CS]);
 
+  // Révision : on compte les lignes révélables (texte/paroles+accords) ;
+  // sections et blancs ne comptent pas, ils restent toujours visibles.
+  const revealables = useMemo(
+    () => blocks.reduce((n, b) => n + (b.type === "row" || b.type === "text" ? 1 : 0), 0),
+    [blocks]);
+  const visibleLines = Math.min(revealables, reviseStart + revealed);
+  const reviseDone = reviseMode && visibleLines >= revealables;
+
+  const startRevise = (mode) => {
+    if (!revealables) return;
+    setScrolling(false);
+    setReviseMode(mode);
+    setReviseStart(mode === "random" ? 1 + Math.floor(Math.random() * Math.max(1, revealables - 1)) : 0);
+    setRevealed(0);
+  };
+  const revealNext = () => {
+    setRevealed((r) => Math.min(r + 1, Math.max(0, revealables - reviseStart)));
+  };
+
+  // La ligne tout juste révélée (ou la fin du contexte en départ aléatoire)
+  // est ramenée au centre de l'écran.
+  useEffect(() => {
+    if (!reviseMode || !sheetRef.current) return;
+    const el = sheetRef.current.querySelector('[data-frontier="1"]');
+    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    else sheetRef.current.scrollTop = 0;
+  }, [reviseMode, reviseStart, revealed]);
+
+  // Au clavier : Espace, Entrée ou ↓ révèlent la ligne suivante.
+  useEffect(() => {
+    if (!reviseMode || view !== "song") return;
+    const h = (e) => {
+      if (e.code === "Space" || e.code === "Enter" || e.code === "ArrowDown") {
+        e.preventDefault();
+        setRevealed((r) => Math.min(r + 1, Math.max(0, revealables - reviseStart)));
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [reviseMode, view, revealables, reviseStart]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = q ? songs.filter((s) => (s.title + " " + s.artist).toLowerCase().includes(q)) : songs;
@@ -901,7 +966,7 @@ export default function Carnet() {
   };
 
   const openSong = (id) => {
-    setCurrentId(id); setView("song"); setScrolling(false);
+    setCurrentId(id); setView("song"); setScrolling(false); setReviseMode(null); setRevealed(0);
     requestAnimationFrame(() => sheetRef.current && (sheetRef.current.scrollTop = 0));
   };
   const startNew = () => { setCurrentId(null); setDraft({ title: "", artist: "", body: "" }); setView("edit"); };
@@ -1079,6 +1144,11 @@ export default function Carnet() {
                 <span>Vitesse <b>{speed}</b></span>
                 <button onClick={() => setSpeed(Math.min(12, speed + 1))} title="Plus rapide">»</button>
               </div>
+              <button className={"switch" + (reviseMode ? " on" : "")} aria-pressed={!!reviseMode}
+                onClick={() => (reviseMode ? setReviseMode(null) : startRevise("seq"))}
+                title="Cacher les paroles et les faire apparaître ligne à ligne">
+                <span className="track"><span className="knob" /></span><label>Révision</label>
+              </button>
             </div>
           </div>
           <div
@@ -1097,8 +1167,37 @@ export default function Carnet() {
                 </div>
               </div>
             )}
-            <Sheet blocks={blocks} showChords={showChords} size={size} />
+            <Sheet blocks={blocks} showChords={showChords} size={size}
+              maskFrom={reviseMode ? visibleLines : null} />
           </div>
+          {reviseMode && (
+            <div className="revbar">
+              <div className="inner">
+                <div className="revprog">
+                  <span>{reviseMode === "random" ? "Départ aléatoire" : "Depuis le début"}</span>
+                  <div className="revtrack"><div className="revfill" style={{ width: `${revealables ? (visibleLines / revealables) * 100 : 0}%` }} /></div>
+                  <span><b>{visibleLines}</b> / {revealables}</span>
+                </div>
+                <div className="revrow">
+                  <button className="iconbtn" style={{ width: 48, height: "auto" }} title="Recommencer depuis le début"
+                    onClick={() => startRevise("seq")}>↺</button>
+                  <button className="iconbtn" style={{ width: 48, height: "auto" }} title="Nouveau départ aléatoire"
+                    onClick={() => startRevise("random")}>🎲</button>
+                  {reviseDone ? (
+                    <button className="btn revmain" onClick={() => startRevise(reviseMode)}>
+                      Bravo, tout est là ! — recommencer
+                    </button>
+                  ) : (
+                    <button className="btn primary revmain" onClick={revealNext}>
+                      Ligne suivante
+                    </button>
+                  )}
+                  <button className="iconbtn" style={{ width: 48, height: "auto" }} title="Quitter la révision"
+                    onClick={() => setReviseMode(null)}>✕</button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
 
