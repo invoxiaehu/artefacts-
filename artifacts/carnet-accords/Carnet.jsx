@@ -495,8 +495,15 @@ const CSS = `
 .empty { text-align:center; padding:44px 20px; color:var(--muted); }
 .empty h2 { font-family:'Barlow Condensed'; text-transform:uppercase; letter-spacing:.1em; color:var(--ink); font-size:22px; margin:0 0 8px; }
 .empty p { margin:0 0 20px; font-size:14px; line-height:1.5; }
-.head { padding:12px 16px; border-bottom:1px solid var(--line); background:var(--panel); flex:0 0 auto; }
-.title { font-family:'Barlow Condensed'; font-weight:700; font-size:26px; line-height:1; letter-spacing:.02em; text-transform:uppercase; margin:0; }
+.head { position:relative; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--panel); flex:0 0 auto; }
+.title { font-family:'Barlow Condensed'; font-weight:700; font-size:26px; line-height:1; letter-spacing:.02em; text-transform:uppercase; margin:0; padding-right:40px; }
+.foldbtn { position:absolute; top:11px; right:14px; width:30px; height:30px; border-radius:8px; border:1px solid var(--line);
+  background:var(--panel2); color:var(--muted); display:grid; place-items:center; font-size:10px; }
+.foldbtn:hover { color:var(--amber); border-color:var(--amber-dim); }
+.foldbtn i { display:block; font-style:normal; transition:transform .25s; }
+.foldbtn.folded i { transform:rotate(180deg); }
+.barwrap { overflow:hidden; max-height:280px; opacity:1; transition:max-height .28s ease, opacity .22s; }
+.barwrap.folded { max-height:0; opacity:0; }
 .artist { font-size:12.5px; color:var(--muted); margin:3px 0 0; letter-spacing:.04em; }
 .bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:12px; }
 .switch { display:flex; align-items:center; gap:9px; padding:5px 11px 5px 7px; border-radius:8px; border:1px solid var(--line); background:var(--panel2); }
@@ -776,6 +783,7 @@ export default function Carnet() {
   const [size, setSize] = useState(17);
   const [scrolling, setScrolling] = useState(false);
   const [speed, setSpeed] = useState(3);
+  const [barOpen, setBarOpen] = useState(true);
   const [reviseMode, setReviseMode] = useState(null); // null | "seq" | "random"
   const [reviseStart, setReviseStart] = useState(0);
   const [revealed, setRevealed] = useState(0);
@@ -976,7 +984,7 @@ export default function Carnet() {
   };
 
   const openSong = (id) => {
-    setCurrentId(id); setView("song"); setScrolling(false); setReviseMode(null); setRevealed(0);
+    setCurrentId(id); setView("song"); setScrolling(false); setReviseMode(null); setRevealed(0); setBarOpen(true);
     requestAnimationFrame(() => sheetRef.current && (sheetRef.current.scrollTop = 0));
   };
   const startNew = () => { setCurrentId(null); setDraft({ title: "", artist: "", body: "" }); setView("edit"); };
@@ -1132,8 +1140,12 @@ export default function Carnet() {
       {view === "song" && current && (
         <>
           <div className="head">
+            <button className={"foldbtn" + (barOpen ? "" : " folded")} aria-expanded={barOpen}
+              title={barOpen ? "Replier les réglages" : "Déplier les réglages"}
+              onClick={() => setBarOpen(!barOpen)}><i>▲</i></button>
             <h1 className="title">{current.title}</h1>
             <p className="artist">{current.artist || "Artiste inconnu"}</p>
+            <div className={"barwrap" + (barOpen ? "" : " folded")}>
             <div className="bar">
               <button className={"switch" + (showChords ? " on" : "")} aria-pressed={showChords} onClick={() => setShowChords(!showChords)}>
                 <span className="track"><span className="knob" /></span><label>Accords</label>
@@ -1163,6 +1175,7 @@ export default function Carnet() {
                 title="Cacher les paroles et les faire apparaître ligne à ligne">
                 <span className="track"><span className="knob" /></span><label>Révision</label>
               </button>
+            </div>
             </div>
           </div>
           <div
