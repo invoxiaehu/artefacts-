@@ -688,6 +688,8 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
         )}
         <div className="actions">
           <button className="btn primary" disabled={!share || !!share.error} onClick={copyUrl}>Copier l'URL avec mes données</button>
+          <button className="btn" disabled={!share || !!share.error}
+            onClick={() => window.open(share.url, "_blank", "noopener")}>Ouvrir dans une autre fenêtre</button>
           <button className="btn ghost" disabled={!share || !!share.error}
             onClick={() => { navigator.clipboard?.writeText(share.data); setUrlMsg("Code compressé copié."); }}>Copier le code seul</button>
         </div>
