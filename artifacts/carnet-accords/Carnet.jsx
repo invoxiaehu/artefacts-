@@ -458,8 +458,11 @@ const CSS = `
   color:var(--ink); font-size:15px; margin-bottom:12px; }
 .search::placeholder { color:var(--muted); }
 .count { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase; margin:0 0 10px; }
-.notice { border:1px solid var(--amber-dim); background:rgba(233,180,76,.07); border-radius:10px; padding:11px 13px;
-  font-size:13px; line-height:1.5; margin-bottom:12px; }
+.notice { position:relative; border:1px solid var(--amber-dim); background:rgba(233,180,76,.07); border-radius:10px;
+  padding:11px 40px 11px 13px; font-size:13px; line-height:1.5; margin-bottom:12px; }
+.noticeclose { position:absolute; top:7px; right:7px; width:26px; height:26px; border-radius:7px; display:grid;
+  place-items:center; color:var(--muted); font-size:13px; line-height:1; }
+.noticeclose:hover { color:var(--ink); background:rgba(233,180,76,.12); }
 .card { width:100%; display:flex; align-items:stretch; border:1px solid var(--line);
   border-left:3px solid var(--line); border-radius:10px; background:var(--panel); margin-bottom:8px;
   transition:border-color .15s; overflow:hidden; }
@@ -990,6 +993,8 @@ export default function Carnet() {
             )}
             {status && (
               <div className="notice">
+                <button className="noticeclose" title="Fermer" aria-label="Fermer le message"
+                  onClick={() => { setStatus(""); setReport([]); }}>✕</button>
                 {status}
                 {report.map((r, i) => (
                   <div key={i} className="reportline">
