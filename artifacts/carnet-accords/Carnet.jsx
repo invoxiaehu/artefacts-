@@ -368,6 +368,7 @@ function normalizeLibrary(data) {
   if (typeof src.showChords === "boolean") lib.showChords = src.showChords;
   if (Number(src.size)) lib.size = Number(src.size);
   if (Number(src.speed)) lib.speed = Number(src.speed);
+  if (src.sort === "title" || src.sort === "artist") lib.sort = src.sort;
   return lib;
 }
 
@@ -380,6 +381,7 @@ async function encodeShare(library) {
     showChords: library.showChords,
     size: library.size,
     speed: library.speed,
+    sort: library.sort,
   });
   const raw = new TextEncoder().encode(json);
   const packed = await gzipBytes(raw);
@@ -458,10 +460,20 @@ const CSS = `
 .count { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase; margin:0 0 10px; }
 .notice { border:1px solid var(--amber-dim); background:rgba(233,180,76,.07); border-radius:10px; padding:11px 13px;
   font-size:13px; line-height:1.5; margin-bottom:12px; }
-.card { width:100%; text-align:left; display:flex; align-items:center; gap:14px; padding:13px 14px; border:1px solid var(--line);
-  border-left:3px solid var(--line); border-radius:10px; background:var(--panel); margin-bottom:8px; transition:border-color .15s, transform .1s; }
+.card { width:100%; display:flex; align-items:stretch; border:1px solid var(--line);
+  border-left:3px solid var(--line); border-radius:10px; background:var(--panel); margin-bottom:8px;
+  transition:border-color .15s; overflow:hidden; }
 .card:hover { border-left-color:var(--amber); }
-.card:active { transform:scale(.994); }
+.cardmain { flex:1; min-width:0; display:flex; align-items:center; gap:14px; padding:13px 14px; text-align:left; }
+.cardmain:active { transform:scale(.996); }
+.carddel { flex:0 0 auto; padding:0 13px; color:var(--muted); border-left:1px solid var(--line); font-size:14px; }
+.carddel:hover { color:var(--hot); background:rgba(200,80,60,.08); }
+.toolrow { display:flex; align-items:center; gap:8px; margin:0 0 12px; flex-wrap:wrap; }
+.toolrow .lab { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); }
+.seg2 { display:flex; border:1px solid var(--line); border-radius:8px; background:var(--panel2); overflow:hidden; }
+.seg2 button { padding:8px 13px; font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+.seg2 button.on { color:var(--amber); background:rgba(233,180,76,.12); }
+.btn.slim { padding:8px 14px; font-size:13.5px; }
 .card h3 { margin:0; font-family:'Barlow Condensed'; font-weight:600; font-size:21px; letter-spacing:.03em; text-transform:uppercase; line-height:1.05; }
 .card p { margin:2px 0 0; font-size:12.5px; color:var(--muted); }
 .tag { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em; text-transform:uppercase; border:1px solid var(--line);
@@ -727,6 +739,7 @@ export default function Carnet() {
   const [draft, setDraft] = useState({ title: "", artist: "", body: "" });
   const [query, setQuery] = useState("");
   const [showChords, setShowChords] = useState(true);
+  const [sort, setSort] = useState("title");
   const [size, setSize] = useState(17);
   const [scrolling, setScrolling] = useState(false);
   const [speed, setSpeed] = useState(3);
@@ -766,6 +779,7 @@ export default function Carnet() {
       if (typeof carnet.showChords === "boolean") setShowChords(carnet.showChords);
       if (carnet.size) setSize(carnet.size);
       if (carnet.speed) setSpeed(carnet.speed);
+      if (carnet.sort === "title" || carnet.sort === "artist") setSort(carnet.sort);
       setReady(true);
       const lib = await loadChordSheetJS();
       if (!alive) return;
@@ -775,7 +789,7 @@ export default function Carnet() {
     return () => { alive = false; };
   }, []);
 
-  useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed }); }, [songs, showChords, size, speed, ready]);
+  useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort }); }, [songs, showChords, size, speed, sort, ready]);
 
   // La barre d'adresse n'est réécrite qu'une fois le partage activé
   // (ouverture d'un lien #data=… ou « Copier l'URL ») : elle reflète alors
@@ -790,12 +804,12 @@ export default function Carnet() {
           window.history.replaceState(null, "", window.location.pathname + window.location.search);
           return;
         }
-        const { hash } = await encodeShare({ songs, showChords, size, speed });
+        const { hash } = await encodeShare({ songs, showChords, size, speed, sort });
         if (alive && window.location.hash !== hash) window.history.replaceState(null, "", hash);
       } catch { /* barre d'adresse laissée telle quelle */ }
     })();
     return () => { alive = false; };
-  }, [songs, showChords, size, speed, ready]);
+  }, [songs, showChords, size, speed, sort, ready]);
 
   const shareUrl = (hash) => {
     syncHashRef.current = true;
@@ -847,8 +861,10 @@ export default function Carnet() {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = q ? songs.filter((s) => (s.title + " " + s.artist).toLowerCase().includes(q)) : songs;
-    return [...list].sort((a, b) => a.title.localeCompare(b.title, "fr"));
-  }, [songs, query]);
+    const key = sort === "artist" ? (s) => (s.artist || "").trim() : (s) => s.title;
+    return [...list].sort((a, b) =>
+      key(a).localeCompare(key(b), "fr") || a.title.localeCompare(b.title, "fr"));
+  }, [songs, query, sort]);
 
   const importPdfs = async (files) => {
     if (!files || !files.length) return;
@@ -899,16 +915,28 @@ export default function Carnet() {
     }
     setView("song");
   };
-  const remove = () => { setSongs(songs.filter((s) => s.id !== current.id)); setCurrentId(null); setView("lib"); };
+  const removeSong = (song) => {
+    if (!window.confirm(`Supprimer « ${song.title} » ?`)) return false;
+    setSongs((prev) => prev.filter((s) => s.id !== song.id));
+    if (currentId === song.id) setCurrentId(null);
+    return true;
+  };
+  const remove = () => { if (removeSong(current)) setView("lib"); };
+  const openRandom = () => {
+    const pool = view === "song" ? songs.filter((s) => s.id !== currentId) : filtered;
+    if (!pool.length) return;
+    openSong(pool[Math.floor(Math.random() * pool.length)].id);
+  };
   const importLibrary = (list, settings) => {
     setSongs((prev) => mergeByTitle(prev, list));
     if (settings) {
       if (typeof settings.showChords === "boolean") setShowChords(settings.showChords);
       if (settings.size) setSize(settings.size);
       if (settings.speed) setSpeed(settings.speed);
+      if (settings.sort === "title" || settings.sort === "artist") setSort(settings.sort);
     }
   };
-  const library = useMemo(() => ({ songs, showChords, size, speed }), [songs, showChords, size, speed]);
+  const library = useMemo(() => ({ songs, showChords, size, speed, sort }), [songs, showChords, size, speed, sort]);
   const shift = (n) => setSongs(songs.map((s) => (s.id === current.id ? { ...s, steps: Math.max(-6, Math.min(6, (s.steps || 0) + n)) } : s)));
 
   const engine = CS ? "ChordSheetJS 15.6" : csTried ? "lecteur interne (CDN inaccessible)" : "chargement…";
@@ -934,6 +962,9 @@ export default function Carnet() {
               {view === "edit" ? (current ? "Modifier" : "Nouvelle grille") : view === "transfer" ? "Transfert" : "Lecture"}
             </div>
             <div className="spacer" />
+            {view === "song" && songs.length > 1 && (
+              <button className="iconbtn" title="Une autre au hasard" onClick={openRandom}>🎲</button>
+            )}
             {view === "song" && <button className="iconbtn" title="Modifier" onClick={startEdit}>✎</button>}
           </>
         )}
@@ -944,6 +975,19 @@ export default function Carnet() {
           <div className="lib">
             <input className="search" value={query} placeholder="Chercher un titre, un artiste…"
               onChange={(e) => setQuery(e.target.value)} />
+            {songs.length > 1 && (
+              <div className="toolrow">
+                <span className="lab">Tri</span>
+                <div className="seg2">
+                  <button className={sort === "title" ? "on" : ""} aria-pressed={sort === "title"}
+                    onClick={() => setSort("title")}>Titre</button>
+                  <button className={sort === "artist" ? "on" : ""} aria-pressed={sort === "artist"}
+                    onClick={() => setSort("artist")}>Artiste</button>
+                </div>
+                <div className="spacer" />
+                <button className="btn slim" onClick={openRandom} title="Ouvrir une chanson au hasard">🎲 Au hasard</button>
+              </div>
+            )}
             {status && (
               <div className="notice">
                 {status}
@@ -973,13 +1017,16 @@ export default function Carnet() {
               <div className="empty"><p>Rien ne correspond à « {query} ».</p></div>
             )}
             {filtered.map((s) => (
-              <button className="card" key={s.id} onClick={() => openSong(s.id)}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <h3>{s.title}</h3>
-                  <p>{s.artist || "Artiste inconnu"}</p>
-                </div>
-                <span className="tag full">{(s.body.match(/^\s*\[[^\]]+\]\s*$/gm) || []).length || "—"} sect.</span>
-              </button>
+              <div className="card" key={s.id}>
+                <button className="cardmain" onClick={() => openSong(s.id)}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <h3>{s.title}</h3>
+                    <p>{s.artist || "Artiste inconnu"}</p>
+                  </div>
+                  <span className="tag full">{(s.body.match(/^\s*\[[^\]]+\]\s*$/gm) || []).length || "—"} sect.</span>
+                </button>
+                <button className="carddel" title={`Supprimer « ${s.title} »`} onClick={() => removeSong(s)}>✕</button>
+              </div>
             ))}
           </div>
           <div className="dock">
