@@ -453,7 +453,7 @@ const CSS = `
 .iconbtn { width:34px; height:34px; border-radius:8px; border:1px solid var(--line); display:grid; place-items:center;
   color:var(--muted); background:var(--panel2); font-size:16px; }
 .iconbtn:hover { color:var(--ink); border-color:var(--amber-dim); }
-.lib { flex:1; overflow-y:auto; padding:14px 16px 96px; }
+.lib { flex:1; overflow-y:auto; padding:14px 16px 28px; }
 .search { width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--line); background:var(--panel);
   color:var(--ink); font-size:15px; margin-bottom:12px; }
 .search::placeholder { color:var(--muted); }
@@ -485,9 +485,6 @@ const CSS = `
 .empty { text-align:center; padding:44px 20px; color:var(--muted); }
 .empty h2 { font-family:'Barlow Condensed'; text-transform:uppercase; letter-spacing:.1em; color:var(--ink); font-size:22px; margin:0 0 8px; }
 .empty p { margin:0 0 20px; font-size:14px; line-height:1.5; }
-.dock { position:absolute; left:0; right:0; bottom:0; display:flex; gap:10px; padding:12px 16px;
-  background:linear-gradient(to top, var(--bg) 62%, transparent); }
-.dock .btn { flex:1; }
 .head { padding:12px 16px; border-bottom:1px solid var(--line); background:var(--panel); flex:0 0 auto; }
 .title { font-family:'Barlow Condensed'; font-weight:700; font-size:26px; line-height:1; letter-spacing:.02em; text-transform:uppercase; margin:0; }
 .artist { font-size:12.5px; color:var(--muted); margin:3px 0 0; letter-spacing:.04em; }
@@ -537,7 +534,7 @@ const CSS = `
 .warnbar { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--hot);
   border:1px solid rgba(200,80,60,.4); border-radius:8px; padding:8px 10px; margin-bottom:14px; }
 .engine { font-family:'JetBrains Mono'; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
-@media (min-width:720px) { .sheet { padding:26px 32px 130px; } .lib { padding:18px 32px 96px; } .dock { padding:14px 32px; } }
+@media (min-width:720px) { .sheet { padding:26px 32px 130px; } .lib { padding:18px 32px 32px; } }
 @media (prefers-reduced-motion:reduce) { .cb * { transition:none !important; } }
 `;
 
@@ -958,7 +955,9 @@ export default function Carnet() {
             <div className="brand">Carnet <span>d'accords</span></div>
             <VU />
             <div className="spacer" />
-            <button className="iconbtn" title="Sauvegarde" onClick={() => setView("transfer")}>⇅</button>
+            <button className="iconbtn" title="Importer des PDF" onClick={() => fileRef.current?.click()}>⤓</button>
+            <button className="iconbtn" title="Saisir une grille" onClick={startNew}>＋</button>
+            <button className="iconbtn" title="Sauvegarde et partage" onClick={() => setView("transfer")}>⇅</button>
           </>
         ) : (
           <>
@@ -1017,7 +1016,10 @@ export default function Carnet() {
               <div className="empty">
                 <h2>Carnet vide</h2>
                 <p>Importez vos PDF de grilles : paroles et accords sont extraits<br />et alignés automatiquement.</p>
-                <button className="btn primary" onClick={() => fileRef.current?.click()}>Importer des PDF</button>
+                <div className="actions" style={{ justifyContent: "center" }}>
+                  <button className="btn primary" onClick={() => fileRef.current?.click()}>Importer des PDF</button>
+                  <button className="btn" onClick={startNew}>Saisir</button>
+                </div>
               </div>
             )}
             {ready && songs.length > 0 && filtered.length === 0 && (
@@ -1035,10 +1037,6 @@ export default function Carnet() {
                 <button className="carddel" title={`Supprimer « ${s.title} »`} onClick={() => removeSong(s)}>✕</button>
               </div>
             ))}
-          </div>
-          <div className="dock">
-            <button className="btn primary" onClick={() => fileRef.current?.click()}>Importer des PDF</button>
-            <button className="btn" onClick={startNew}>Saisir</button>
           </div>
         </>
       )}
