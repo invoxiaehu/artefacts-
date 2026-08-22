@@ -929,6 +929,14 @@ export default function Carnet() {
     if (!pool.length) return;
     openSong(pool[Math.floor(Math.random() * pool.length)].id);
   };
+  const resetAll = () => {
+    if (!window.confirm("Tout effacer sur cet appareil ? Les grilles et les réglages stockés localement seront supprimés. Copiez d'abord l'URL de partage si vous voulez pouvoir revenir en arrière.")) return;
+    syncHashRef.current = false;
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    setSongs([]); setCurrentId(null); setQuery(""); setStatus(""); setReport([]);
+    setShowChords(true); setSort("title"); setSize(17); setSpeed(3); setScrolling(false);
+    setView("lib");
+  };
   const importLibrary = (list, settings) => {
     setSongs((prev) => mergeByTitle(prev, list));
     if (settings) {
@@ -958,12 +966,13 @@ export default function Carnet() {
             <button className="iconbtn" title="Importer des PDF" onClick={() => fileRef.current?.click()}>⤓</button>
             <button className="iconbtn" title="Saisir une grille" onClick={startNew}>＋</button>
             <button className="iconbtn" title="Sauvegarde et partage" onClick={() => setView("transfer")}>⇅</button>
+            <button className="iconbtn" title="Réglages" onClick={() => setView("settings")}>⚙</button>
           </>
         ) : (
           <>
             <button className="iconbtn" title="Retour" onClick={() => { setScrolling(false); setView("lib"); }}>‹</button>
             <div className="brand" style={{ fontSize: 15, color: "var(--muted)" }}>
-              {view === "edit" ? (current ? "Modifier" : "Nouvelle grille") : view === "transfer" ? "Transfert" : "Lecture"}
+              {view === "edit" ? (current ? "Modifier" : "Nouvelle grille") : view === "transfer" ? "Transfert" : view === "settings" ? "Réglages" : "Lecture"}
             </div>
             <div className="spacer" />
             {view === "song" && songs.length > 1 && (
@@ -1099,6 +1108,35 @@ export default function Carnet() {
 
       {view === "transfer" && (
         <Transfer library={library} engine={engine} onClose={() => setView("lib")} onImport={importLibrary} onShareUrl={shareUrl} />
+      )}
+
+      {view === "settings" && (
+        <div className="form">
+          <div className="forminner">
+            <div className="field">
+              <label>Stockage</label>
+              <p className="hint">
+                Le carnet vit uniquement dans ce navigateur, sur cet appareil — aucun serveur.
+                Actuellement : {songs.length} chanson{songs.length > 1 ? "s" : ""} enregistrée{songs.length > 1 ? "s" : ""}.
+                Pour une sauvegarde ou un passage sur un autre appareil, la page Transfert (⇅)
+                fournit une URL contenant toutes les données, ou un export JSON.
+              </p>
+            </div>
+            <div className="field">
+              <label>Réinitialiser</label>
+              <p className="hint">
+                Efface les grilles et les réglages stockés sur cet appareil, et retire les
+                données de la barre d'adresse. Les autres appareils et les URL déjà copiées
+                ne sont pas touchés.
+              </p>
+            </div>
+            <div className="actions">
+              <button className="btn danger" onClick={resetAll}>Tout effacer sur cet appareil</button>
+              <button className="btn ghost" onClick={() => setView("lib")}>Retour</button>
+            </div>
+            <p className="engine">Moteur d'analyse : {engine}</p>
+          </div>
+        </div>
       )}
     </div>
   );
