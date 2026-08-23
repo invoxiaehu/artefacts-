@@ -739,6 +739,32 @@ function mergeTags(prev, added) {
   return { defs, byKey };
 }
 
+/** La charge d'une sauvegarde : grilles et tags, jamais les ids (régénérés à
+ *  chaque import). Une seule fonction pour que le fichier écrit et la signature
+ *  comparée soient forcément d'accord. */
+const backupJson = (songs, tags) =>
+  JSON.stringify({ songs: songs.map(({ id, ...rest }) => rest), tags }, null, 1);
+
+/** Empreinte courte, juste pour répondre à « est-ce que ça a changé depuis la
+ *  dernière sauvegarde ? ». Pas de cryptographie ici. */
+function signature(text) {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+const BACKUP_KEY = "backup:v1";
+async function loadBackup() {
+  try {
+    const r = await window.storage.get(BACKUP_KEY);
+    const b = r ? JSON.parse(r.value) : null;
+    return b && b.sig ? { at: Number(b.at) || 0, sig: String(b.sig) } : null;
+  } catch { return null; }
+}
+async function saveBackupMark(b) {
+  try { await window.storage.set(BACKUP_KEY, JSON.stringify(b)); } catch { /* hors ligne */ }
+}
+
 async function loadTags() {
   try { const r = await window.storage.get(TAGS_KEY); return r ? normalizeTags(JSON.parse(r.value)) : null; } catch { return null; }
 }
@@ -788,6 +814,10 @@ const CSS = `
 .iconbtn { width:34px; height:34px; border-radius:8px; border:1px solid var(--line); display:grid; place-items:center;
   color:var(--muted); background:var(--panel2); font-size:16px; }
 .iconbtn:hover { color:var(--ink); border-color:var(--amber-dim); }
+/* Un point ambre : le carnet a changé depuis la dernière sauvegarde en fichier. */
+.iconbtn.nudge { position:relative; }
+.iconbtn.nudge::after { content:''; position:absolute; top:4px; right:4px; width:6px; height:6px;
+  border-radius:50%; background:var(--amber); box-shadow:0 0 0 2px var(--panel); }
 .lib { flex:1; overflow-y:auto; padding:14px 16px calc(28px + var(--sab)); }
 .search { width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--line); background:var(--panel);
   color:var(--ink); font-size:15px; margin-bottom:12px; }
@@ -1289,19 +1319,18 @@ function Editor({ draft, setDraft, onSave, onCancel, onDelete }) {
   );
 }
 
-function Transfer({ library, tags, engine, onImport, onShareUrl, onClose }) {
+function Transfer({ library, tags, engine, backup, dirty, onImport, onShareUrl, onSaved, onClose }) {
   const { songs } = library;
   const [text, setText] = useState("");
   const [msg, setMsg] = useState("");
   const [urlMsg, setUrlMsg] = useState("");
   const [share, setShare] = useState(null);
   const [fileMsg, setFileMsg] = useState("");
+  const [pasteOpen, setPasteOpen] = useState(false);
   const fileRef = useRef(null);
   // Le fichier de sauvegarde porte les grilles ET les tags ; l'URL de partage,
   // elle, ne reçoit que le carnet (encodeShare(library) plus bas).
-  const json = useMemo(
-    () => JSON.stringify({ songs: songs.map(({ id, ...r }) => r), tags }, null, 1),
-    [songs, tags]);
+  const json = useMemo(() => backupJson(songs, tags), [songs, tags]);
 
   useEffect(() => {
     let alive = true;
@@ -1351,14 +1380,17 @@ function Transfer({ library, tags, engine, onImport, onShareUrl, onClose }) {
    *  Fichiers », donc iCloud Drive — et elle fonctionne depuis l'app installée, là
    *  où un téléchargement classique est capricieux. Ailleurs, téléchargement. Rien
    *  d'asynchrone avant navigator.share : le geste de l'utilisateur serait perdu. */
+  /** Toujours le même nom : iOS propose alors de remplacer le fichier existant,
+   *  ce qui donne une sauvegarde unique et à jour au lieu d'une collection de
+   *  fichiers datés. */
   const saveFile = () => {
-    const name = `carnet-accords-${new Date().toISOString().slice(0, 10)}.json`;
+    const name = "carnet-accords.json";
     const file = new File([json], name, { type: "application/json" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       setFileMsg("");
       navigator.share({ files: [file], title: "Sauvegarde du Carnet d'accords" })
-        .then(() => setFileMsg(`${name} — choisissez « Enregistrer dans Fichiers » pour le ranger dans iCloud Drive.`))
-        .catch((e) => { if (e && e.name !== "AbortError") setFileMsg("Partage refusé par le navigateur : utilisez « Copier » juste à côté."); });
+        .then(() => { onSaved(); setFileMsg("Sauvegarde transmise à Fichiers."); })
+        .catch((e) => { if (e && e.name !== "AbortError") setFileMsg("Partage refusé par le navigateur — réessayez, ou passez par l'URL de partage."); });
       return;
     }
     try {
@@ -1370,9 +1402,10 @@ function Transfer({ library, tags, engine, onImport, onShareUrl, onClose }) {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
+      onSaved();
       setFileMsg(`Fichier enregistré : ${name}`);
     } catch {
-      setFileMsg("Enregistrement impossible dans ce navigateur : utilisez « Copier ».");
+      setFileMsg("Enregistrement impossible dans ce navigateur — passez par l'URL de partage.");
     }
   };
 
@@ -1402,80 +1435,90 @@ function Transfer({ library, tags, engine, onImport, onShareUrl, onClose }) {
   const isAndroid = /Android/i.test(navigator.userAgent);
   const isMac = !isIOS && /Mac/.test(navigator.userAgent);
 
+  const plural = (n) => (n > 1 ? "s" : "");
+  const dateFmt = (t) => new Date(t).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
+
   return (
     <div className="form">
       <div className="forminner">
+
+        {/* 1 — la sauvegarde : le geste de tous les jours */}
         <div className="field">
-          <label htmlFor="shareurl">Partager par URL — toutes les données voyagent après le #</label>
-          <textarea id="shareurl" readOnly style={{ minHeight: 90, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
-            value={share ? (share.error ? `Indisponible : ${share.error}` : share.url) : "Préparation…"}
-            onFocus={(e) => e.target.select()} />
-        </div>
-        {share && !share.error && (
-          <p className="reportline">
-            JSON <b>{fmtBytes(share.rawBytes)}</b> → gzip <b>{fmtBytes(share.packedBytes)}</b> → URL
-            de <b>{share.url.length.toLocaleString("fr-FR")}</b> caractères
-            {share.url.length > 30000 && " — très longue : certaines messageries ou navigateurs tronquent au-delà"}
-          </p>
-        )}
-        <div className="actions">
-          <button className="btn primary" disabled={!share || !!share.error} onClick={copyUrl}>Copier l'URL avec mes données</button>
-          <button className="btn" disabled={!share || !!share.error}
-            onClick={() => window.open(share.url, "_blank", "noopener")}>Ouvrir dans une autre fenêtre</button>
-          <button className="btn ghost" disabled={!share || !!share.error}
-            onClick={() => { navigator.clipboard?.writeText(share.data); setUrlMsg("Code compressé copié."); }}>Copier le code seul</button>
-        </div>
-        {urlMsg && <p className="hint">{urlMsg}</p>}
-        <div className="field">
-          <label>Retrouver ce carnet plus tard</label>
+          <label>Sauvegarde du carnet</label>
           <p className="hint">
-            Après « Copier l'URL avec mes données », la barre d'adresse porte le carnet complet et reste à jour.{" "}
-            {isIOS ? (
-              <>Sur iPhone/iPad, iOS n'autorise aucun bouton à le faire tout seul : touchez <b>Partager</b> puis
-              <b> « Sur l'écran d'accueil »</b> (ou « Ajouter un signet ») — l'icône créée rouvrira le carnet avec toutes vos grilles.</>
-            ) : isAndroid ? (
-              <>Sur Android : menu <b>⋮</b> puis <b>« Ajouter à l'écran d'accueil »</b>, ou l'étoile pour les favoris.</>
-            ) : (
-              <>Appuyez sur <b>{isMac ? "⌘D" : "Ctrl+D"}</b> pour ajouter la page aux favoris — les navigateurs
-              modernes n'autorisent plus les sites à le déclencher eux-mêmes.</>
-            )}
-          </p>
-        </div>
-        <div className="field">
-          <label>Sauvegarde du carnet (JSON) — grilles et tags</label>
-          <textarea readOnly value={json} style={{ minHeight: 140 }} onFocus={(e) => e.target.select()} />
-          <p className="hint" style={{ marginTop: 6 }}>
+            {songs.length} chanson{plural(songs.length)} et {tags.defs.length} tag{plural(tags.defs.length)},
+            dans un fichier toujours nommé <b>carnet-accords.json</b>.{" "}
             {isIOS
-              ? <>« Enregistrer un fichier » ouvre la feuille de partage : choisissez <b>Enregistrer dans Fichiers</b> pour déposer la sauvegarde dans iCloud Drive. Elle se relit plus bas avec « Choisir un fichier ».</>
-              : <>« Enregistrer un fichier » télécharge la sauvegarde datée ; elle se relit plus bas avec « Choisir un fichier ».</>}
+              ? <>« Enregistrer » ouvre la feuille de partage : choisissez <b>Enregistrer dans Fichiers</b>,
+                puis <b>Remplacer</b> — vous gardez ainsi une seule sauvegarde à jour, par exemple dans iCloud Drive.</>
+              : <>Remplacez le fichier précédent pour garder une seule sauvegarde à jour.</>}
+          </p>
+          <p className="hint" style={{ marginTop: 6, color: dirty ? "var(--amber)" : undefined }}>
+            {backup
+              ? <>Dernière sauvegarde : <b>{dateFmt(backup.at)}</b>{dirty ? " — le carnet a changé depuis." : " — à jour."}</>
+              : songs.length > 0
+                ? "Aucune sauvegarde enregistrée depuis cet appareil."
+                : "Carnet vide : rien à sauvegarder pour l'instant."}
           </p>
         </div>
         <div className="actions">
-          <button className="btn primary" disabled={!songs.length} onClick={saveFile}>Enregistrer un fichier</button>
-          <button className="btn ghost" onClick={() => navigator.clipboard?.writeText(json)}>Copier</button>
+          <button className="btn primary" disabled={!songs.length} onClick={saveFile}>Enregistrer</button>
+          <button className="btn" onClick={() => fileRef.current?.click()}>Restaurer un fichier…</button>
         </div>
         {fileMsg && <p className="hint">{fileMsg}</p>}
-        <div className="field">
-          <label>Restaurer depuis un fichier</label>
-          <p className="hint">
-            Une sauvegarde <b>.json</b> enregistrée plus haut, reprise dans Fichiers, iCloud Drive ou
-            vos téléchargements. Les grilles s'ajoutent au carnet en place ; à titre identique, celle
-            du fichier gagne.
-          </p>
-        </div>
-        <div className="actions">
-          <button className="btn primary" onClick={() => fileRef.current?.click()}>Choisir un fichier…</button>
-        </div>
-        <div className="field">
-          <label htmlFor="imp">Ou coller — JSON, code compressé ou URL partagée</label>
-          <textarea id="imp" value={text} placeholder={'[{"title":"…","artist":"…","body":"…"}]  ou  https://…#v=1&data=…'}
-            style={{ minHeight: 140 }} onChange={(e) => setText(e.target.value)} />
-        </div>
         {msg && <p className="hint">{msg}</p>}
+
+        {/* 2 — partager, ou installer sur l'écran d'accueil avec les données */}
+        <div className="field">
+          <label htmlFor="shareurl">Partager ou installer — tout voyage après le #</label>
+          <textarea id="shareurl" readOnly style={{ minHeight: 76, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+            value={share ? (share.error ? `Indisponible : ${share.error}` : share.url) : "Préparation…"}
+            onFocus={(e) => e.target.select()} />
+          {share && !share.error && (
+            <p className="reportline">
+              URL de <b>{share.url.length.toLocaleString("fr-FR")}</b> caractères (gzip {fmtBytes(share.packedBytes)})
+              {share.url.length > 30000 && " — très longue : certaines messageries la tronquent"}
+              {" "}· sans les tags, qui restent sur cet appareil
+            </p>
+          )}
+        </div>
         <div className="actions">
-          <button className="btn" onClick={() => doImport()}>Importer le texte collé</button>
+          <button className="btn primary" disabled={!share || !!share.error} onClick={copyUrl}>Copier l'URL</button>
+          <button className="btn" disabled={!share || !!share.error}
+            onClick={() => window.open(share.url, "_blank", "noopener")}>Ouvrir dans une autre fenêtre</button>
+        </div>
+        {urlMsg && <p className="hint">{urlMsg}</p>}
+        <p className="hint">
+          {isIOS ? (
+            <>Pour poser le carnet sur l'écran d'accueil : ouvrez cette URL dans une autre fenêtre, puis
+            touchez <b>Partager</b> → <b>« Sur l'écran d'accueil »</b>. L'icône créée rouvrira le carnet avec ses grilles.</>
+          ) : isAndroid ? (
+            <>Sur Android : menu <b>⋮</b> puis <b>« Ajouter à l'écran d'accueil »</b>, ou l'étoile pour les favoris.</>
+          ) : (
+            <>Appuyez sur <b>{isMac ? "⌘D" : "Ctrl+D"}</b> pour mettre la page en favori — les navigateurs ne
+            laissent plus les sites le déclencher eux-mêmes.</>
+          )}
+        </p>
+
+        {/* 3 — recevoir un carnet collé : replié, c'est rare */}
+        <div className="actions">
+          <button className="btn ghost" onClick={() => setPasteOpen(!pasteOpen)}>
+            {pasteOpen ? "Masquer le collage" : "Coller une URL ou un code…"}
+          </button>
           <button className="btn ghost" onClick={onClose}>Retour</button>
         </div>
+        {pasteOpen && (
+          <>
+            <div className="field">
+              <label htmlFor="imp">URL partagée, code compressé ou JSON</label>
+              <textarea id="imp" value={text} placeholder={'https://…#v=1&data=…'}
+                style={{ minHeight: 90 }} onChange={(e) => setText(e.target.value)} />
+            </div>
+            <div className="actions">
+              <button className="btn" onClick={() => doImport()}>Importer</button>
+            </div>
+          </>
+        )}
         <input ref={fileRef} type="file" accept=".json,application/json,text/plain"
           className="vhide" tabIndex={-1} aria-hidden="true"
           onChange={(e) => { readFile(e.target.files && e.target.files[0]); e.target.value = ""; }} />
@@ -1516,6 +1559,7 @@ export default function Carnet() {
   const [offline, setOffline] = useState(() => (window.offline ? window.offline.get() : null));
   const [tags, setTags] = useState(freshTags);
   const [tagFilter, setTagFilter] = useState([]);
+  const [backup, setBackup] = useState(null); // { at, sig } de la dernière sauvegarde en fichier
   const sheetRef = useRef(null);
   const fileRef = useRef(null);
   const syncHashRef = useRef(false);
@@ -1549,8 +1593,10 @@ export default function Carnet() {
       // vide est respecté (tags tous supprimés) ; seule leur absence remet les
       // quatre tags par défaut.
       const saved = await loadTags();
+      const mark = await loadBackup();
       if (!alive) return;
       if (saved) setTags(saved);
+      if (mark) setBackup(mark);
       if (typeof carnet.showChords === "boolean") setShowChords(carnet.showChords);
       if (carnet.size) setSize(carnet.size);
       if (carnet.speed) setSpeed(carnet.speed);
@@ -1568,6 +1614,17 @@ export default function Carnet() {
 
   useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort, barOpen, instrument }); }, [songs, showChords, size, speed, sort, barOpen, instrument, ready]);
   useEffect(() => { if (ready) saveTags(tags); }, [tags, ready]);
+
+  // Sur iOS, aucune page web ne peut réécrire seule dans un fichier : la
+  // sauvegarde reste un geste. À défaut de l'automatiser, l'app signale qu'elle
+  // est due — point ambre sur ⇅, état détaillé dans la page Transfert.
+  const currentSig = useMemo(() => signature(backupJson(songs, tags)), [songs, tags]);
+  const dirty = ready && songs.length > 0 && (!backup || backup.sig !== currentSig);
+  const markSaved = () => {
+    const mark = { at: Date.now(), sig: currentSig };
+    setBackup(mark);
+    saveBackupMark(mark);
+  };
 
   // Un effet ne doit rien renvoyer d'autre qu'une fonction de nettoyage.
   useEffect(() => (window.offline ? window.offline.subscribe(setOffline) : undefined), []);
@@ -1879,7 +1936,8 @@ export default function Carnet() {
             <div className="spacer" />
             <button className="iconbtn" title="Importer des PDF" onClick={() => fileRef.current?.click()}>⤓</button>
             <button className="iconbtn" title="Saisir une grille" onClick={startNew}>＋</button>
-            <button className="iconbtn" title="Sauvegarde et partage" onClick={() => setView("transfer")}>⇅</button>
+            <button className={"iconbtn" + (dirty ? " nudge" : "")} onClick={() => setView("transfer")}
+              title={dirty ? "Sauvegarde et partage — carnet modifié depuis la dernière sauvegarde" : "Sauvegarde et partage"}>⇅</button>
             <button className="iconbtn" title="Réglages" onClick={() => setView("settings")}>⚙</button>
           </>
         ) : (
@@ -2119,8 +2177,8 @@ export default function Carnet() {
       )}
 
       {view === "transfer" && (
-        <Transfer library={library} tags={tags} engine={engine} onClose={() => setView("lib")}
-          onImport={importLibrary} onShareUrl={shareUrl} />
+        <Transfer library={library} tags={tags} engine={engine} backup={backup} dirty={dirty}
+          onClose={() => setView("lib")} onImport={importLibrary} onShareUrl={shareUrl} onSaved={markSaved} />
       )}
 
       {view === "settings" && (
