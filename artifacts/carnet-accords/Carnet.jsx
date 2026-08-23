@@ -687,12 +687,19 @@ const CSS = `
 .cb, .cb * { box-sizing:border-box; }
 .cb { --bg:#111216; --panel:#181A1F; --panel2:#20232A; --line:#2E323B;
   --ink:#ECE9E3; --muted:#878C97; --amber:#E9B44C; --amber-dim:#8A6B2A; --hot:#C8503C;
+  /* Zones réservées par le système — barre d'état, indicateur d'accueil, encoche en
+     paysage. Nulles partout ailleurs, donc sans effet sur un écran ordinaire. En
+     variables plutôt qu'en env() dispersés : c'est ce qui rend la mise en page
+     vérifiable ailleurs que sur un iPhone. */
+  --sat:env(safe-area-inset-top, 0px); --sab:env(safe-area-inset-bottom, 0px);
+  --sal:env(safe-area-inset-left, 0px); --sar:env(safe-area-inset-right, 0px);
   position:absolute; inset:0; display:flex; flex-direction:column; background:var(--bg); color:var(--ink);
+  padding-left:var(--sal); padding-right:var(--sar);
   font-family:'Archivo', ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing:antialiased; overflow:hidden; }
 .cb button { font:inherit; color:inherit; background:none; border:none; cursor:pointer; }
 .cb :focus-visible { outline:2px solid var(--amber); outline-offset:2px; }
-.top { display:flex; align-items:center; gap:12px; padding:12px 16px 10px; border-bottom:1px solid var(--line);
-  background:var(--panel); flex:0 0 auto; }
+.top { display:flex; align-items:center; gap:12px; padding:calc(12px + var(--sat)) 16px 10px;
+  border-bottom:1px solid var(--line); background:var(--panel); flex:0 0 auto; }
 .brand { font-family:'Barlow Condensed'; font-weight:700; font-size:19px; letter-spacing:.14em; text-transform:uppercase; line-height:1; }
 .brand span { color:var(--amber); }
 .vu { display:flex; gap:3px; align-items:flex-end; height:16px; }
@@ -702,7 +709,7 @@ const CSS = `
 .iconbtn { width:34px; height:34px; border-radius:8px; border:1px solid var(--line); display:grid; place-items:center;
   color:var(--muted); background:var(--panel2); font-size:16px; }
 .iconbtn:hover { color:var(--ink); border-color:var(--amber-dim); }
-.lib { flex:1; overflow-y:auto; padding:14px 16px 28px; }
+.lib { flex:1; overflow-y:auto; padding:14px 16px calc(28px + var(--sab)); }
 .search { width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--line); background:var(--panel);
   color:var(--ink); font-size:15px; margin-bottom:12px; }
 .search::placeholder { color:var(--muted); }
@@ -758,7 +765,7 @@ const CSS = `
 .stepper span { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em; color:var(--muted); padding:0 8px;
   text-transform:uppercase; min-width:70px; text-align:center; }
 .stepper span b { color:var(--ink); font-weight:700; }
-.sheet { flex:1; overflow-y:auto; padding:20px 16px 120px; }
+.sheet { flex:1; overflow-y:auto; padding:20px 16px calc(120px + var(--sab)); }
 .sheetinner { max-width:760px; margin:0 auto; }
 .sec { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--amber);
   margin:26px 0 10px; display:flex; align-items:center; gap:10px; }
@@ -767,7 +774,8 @@ const CSS = `
 .row { display:flex; flex-wrap:wrap; align-items:flex-end; margin-bottom:2px; }
 .row, .plain { transition:filter .4s, opacity .4s; }
 .masked { filter:blur(8px); opacity:.35; user-select:none; pointer-events:none; }
-.revbar { position:absolute; left:0; right:0; bottom:0; z-index:4; padding:10px 16px 14px; display:flex; flex-direction:column; gap:9px;
+.revbar { position:absolute; left:0; right:0; bottom:0; z-index:4; display:flex; flex-direction:column; gap:9px;
+  padding:10px 16px calc(14px + var(--sab));
   background:linear-gradient(to top, var(--bg) 72%, transparent); }
 .revbar .inner { max-width:760px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:9px; }
 .revprog { display:flex; align-items:center; gap:10px; font-family:'JetBrains Mono'; font-size:10px;
@@ -784,7 +792,7 @@ const CSS = `
 .ly { white-space:pre-wrap; line-height:1.42; }
 .plain { line-height:1.55; margin-bottom:2px; white-space:pre-wrap; }
 .gap { height:14px; }
-.form { flex:1; overflow-y:auto; padding:18px 16px 40px; }
+.form { flex:1; overflow-y:auto; padding:18px 16px calc(40px + var(--sab)); }
 .forminner { max-width:760px; margin:0 auto; display:flex; flex-direction:column; gap:14px; }
 .field label { display:block; font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); margin-bottom:6px; }
 .field input, .field textarea { width:100%; padding:11px 13px; border-radius:9px; border:1px solid var(--line); background:var(--panel); color:var(--ink); font-size:15px; }
@@ -805,8 +813,8 @@ const CSS = `
   border:1px solid rgba(200,80,60,.4); border-radius:8px; padding:8px 10px; margin-bottom:14px; }
 .engine { font-family:'JetBrains Mono'; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
 .flow { position:absolute; inset:0; z-index:6; background:var(--bg); display:flex; flex-direction:column; }
-.flowtop { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line);
-  background:var(--panel); flex:0 0 auto; }
+.flowtop { display:flex; align-items:center; gap:10px; padding:calc(10px + var(--sat)) 14px 10px;
+  border-bottom:1px solid var(--line); background:var(--panel); flex:0 0 auto; }
 .flowprog { flex:1; display:flex; align-items:center; gap:10px; min-width:0;
   font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; color:var(--muted); white-space:nowrap; }
 .flowprog b { color:var(--amber); }
@@ -829,13 +837,14 @@ const CSS = `
 .flowmeta { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase;
   color:var(--muted); min-height:13px; }
 .flowbottom { flex:0 0 auto; display:flex; align-items:center; gap:10px;
-  padding:10px 14px calc(14px + env(safe-area-inset-bottom)); }
+  padding:10px 14px calc(14px + var(--sab)); }
 .flowchip { border:1px solid var(--line); border-radius:8px; padding:9px 13px; font-family:'JetBrains Mono';
   font-size:12px; color:var(--muted); min-width:72px; background:var(--panel2); white-space:nowrap; }
 .flowchip:disabled { opacity:.35; cursor:default; }
 .flowchip:hover:not(:disabled) { color:var(--amber); border-color:var(--amber-dim); }
 .flowhint { display:none; }
-@media (min-width:720px) { .sheet { padding:26px 32px 130px; } .lib { padding:18px 32px 32px; }
+@media (min-width:720px) { .sheet { padding:26px 32px calc(130px + var(--sab)); }
+  .lib { padding:18px 32px calc(32px + var(--sab)); }
   .flowdiag svg { width:min(44vh, 380px); }
   .flowhint { display:block; text-align:center; font-family:'JetBrains Mono'; font-size:9.5px;
     letter-spacing:.14em; text-transform:uppercase; color:var(--muted); padding:0 0 10px; } }

@@ -9,9 +9,13 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
   <link rel="icon" href="./icon-192.png" type="image/png" />
-  <!-- iOS : lancement plein écran depuis l'écran d'accueil -->
+  <!-- iOS : lancement plein écran depuis l'écran d'accueil. Barre d'état opaque
+       (« black ») et non « black-translucent » : la vue web se place SOUS elle, au
+       lieu de passer dessous et de laisser l'heure se dessiner sur l'en-tête.
+       `viewport-fit=cover` reste utile pour peindre jusqu'au bord inférieur ; les
+       marges de sécurité sont reprises dans le CSS (variables --sat/--sab/…). -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
   <meta name="apple-mobile-web-app-title" content="Carnet" />
   <!-- Les polices sont chargées ici, et non par un @import dans le CSS injecté :
        `crossorigin` rend la réponse non opaque, donc stockable par le service
