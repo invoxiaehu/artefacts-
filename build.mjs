@@ -123,7 +123,12 @@ async function buildPwa({ slug, dir, out, pwa, appVersion }) {
     short_name: pwa.short_name,
     description: pwa.description,
     lang: "fr",
-    start_url: "./",
+    // Pas de start_url par défaut : le navigateur retombe alors sur l'URL du
+    // document au moment de l'installation, fragment compris. C'est ce qui permet
+    // à « Sur l'écran d'accueil » d'embarquer les données d'une URL de partage
+    // (#v=1&data=… pour le Carnet) — déclarer start_url ici les remplacerait par
+    // une page vide. À ne renseigner que pour un artefact sans état dans l'URL.
+    ...(pwa.start_url ? { start_url: pwa.start_url } : {}),
     scope: "./",
     display: "standalone",
     orientation: "portrait",
