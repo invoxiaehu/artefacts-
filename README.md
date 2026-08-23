@@ -44,6 +44,11 @@ d'accueil.
 
 - `vendor` copie des fichiers de `node_modules/` vers `dist/<nom>/vendor/` : les
   librairies chargées au runtime ne dépendent plus d'un CDN, donc plus du réseau.
+- `start_url` est **facultatif et doit rester absent** pour un artefact qui transporte
+  son état dans le fragment d'URL (comme le Carnet et son `#v=1&data=…`) : sans lui, le
+  navigateur retient l'URL affichée au moment de l'installation, fragment compris, et
+  « Sur l'écran d'accueil » embarque les données. Le déclarer les remplacerait par une
+  page vide.
 - Le cache est nommé d'après le contenu déployé (`<nom>-v<hash>`) : un nouveau
   déploiement invalide l'ancien tout seul, et les caches des autres artefacts —
   le site est servi depuis une seule origine — ne sont jamais touchés.

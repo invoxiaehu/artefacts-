@@ -1703,6 +1703,11 @@ export default function Carnet() {
                   <button className="btn primary" onClick={() => fileRef.current?.click()}>Importer des PDF</button>
                   <button className="btn" onClick={startNew}>Saisir</button>
                 </div>
+                <p className="hint" style={{ marginTop: 14 }}>
+                  Un carnet existe déjà ailleurs ? La page Transfert (⇅) le rapatrie depuis une URL
+                  de partage, un code compressé ou un export JSON. Une app installée sur l'écran
+                  d'accueil a son propre stockage : le carnet du navigateur n'y est pas repris.
+                </p>
               </div>
             )}
             {ready && songs.length > 0 && filtered.length === 0 && (
