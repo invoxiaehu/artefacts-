@@ -1380,11 +1380,15 @@ function Transfer({ library, tags, engine, backup, dirty, onImport, onShareUrl, 
    *  Fichiers », donc iCloud Drive — et elle fonctionne depuis l'app installée, là
    *  où un téléchargement classique est capricieux. Ailleurs, téléchargement. Rien
    *  d'asynchrone avant navigator.share : le geste de l'utilisateur serait perdu. */
-  /** Toujours le même nom : iOS propose alors de remplacer le fichier existant,
-   *  ce qui donne une sauvegarde unique et à jour au lieu d'une collection de
-   *  fichiers datés. */
+  /** Nom daté et horodaté. Un nom fixe serait plus propre, mais iOS ne propose
+   *  pas de remplacer : il numérote en silence (« carnet-accords 2.json »), ce
+   *  qui donne une pile indiscernable. Avec la date et l'heure, la pile reste
+   *  chronologique et la dernière sauvegarde se reconnaît au premier coup d'œil. */
   const saveFile = () => {
-    const name = "carnet-accords.json";
+    const d = new Date();
+    const p2 = (v) => String(v).padStart(2, "0");
+    const name = `carnet-accords-${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
+      + `-${p2(d.getHours())}${p2(d.getMinutes())}.json`;
     const file = new File([json], name, { type: "application/json" });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       setFileMsg("");
@@ -1447,11 +1451,12 @@ function Transfer({ library, tags, engine, backup, dirty, onImport, onShareUrl, 
           <label>Sauvegarde du carnet</label>
           <p className="hint">
             {songs.length} chanson{plural(songs.length)} et {tags.defs.length} tag{plural(tags.defs.length)},
-            dans un fichier toujours nommé <b>carnet-accords.json</b>.{" "}
+            dans un fichier daté à la minute — <b>carnet-accords-{new Date().getFullYear()}-…json</b>.{" "}
             {isIOS
-              ? <>« Enregistrer » ouvre la feuille de partage : choisissez <b>Enregistrer dans Fichiers</b>,
-                puis <b>Remplacer</b> — vous gardez ainsi une seule sauvegarde à jour, par exemple dans iCloud Drive.</>
-              : <>Remplacez le fichier précédent pour garder une seule sauvegarde à jour.</>}
+              ? <>« Enregistrer » ouvre la feuille de partage : choisissez <b>Enregistrer dans Fichiers</b>, par exemple
+                dans iCloud Drive. iOS ne sait pas remplacer un fichier existant — il numérote —, d'où la date dans le
+                nom : la dernière sauvegarde est celle du haut, les précédentes se suppriment depuis Fichiers.</>
+              : <>La date dans le nom garde la pile lisible ; les anciennes sauvegardes se suppriment à la main.</>}
           </p>
           <p className="hint" style={{ marginTop: 6, color: dirty ? "var(--amber)" : undefined }}>
             {backup
