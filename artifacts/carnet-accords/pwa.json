@@ -1,0 +1,14 @@
+{
+  "name": "Carnet d'accords",
+  "short_name": "Carnet",
+  "description": "Carnet de grilles d'accords : import de PDF, transposition, défilement automatique. Fonctionne sans connexion.",
+  "background": "#111216",
+  "accent": "#E9B44C",
+  "accent_dim": "#8A6B2A",
+  "vendor": {
+    "pdf.min.js": "pdfjs-dist/build/pdf.min.js",
+    "pdf.worker.min.js": "pdfjs-dist/build/pdf.worker.min.js",
+    "chordsheet.min.js": "chordsheetjs/lib/bundle.min.js"
+  },
+  "fonts": "https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@700&display=swap"
+}

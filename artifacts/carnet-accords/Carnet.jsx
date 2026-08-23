@@ -4,12 +4,24 @@ import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "re
    Deux librairies font le travail :
    - pdf.js        : lecture du PDF, avec reconstruction des colonnes
    - ChordSheetJS  : modèle musical (accords, sections, transposition)
-   Un analyseur interne prend le relais si un CDN est inaccessible.
+   Un analyseur interne prend le relais si l'une est inaccessible.
+
+   Elles sont servies par le site lui-même (dossier vendor/, rempli au build
+   depuis node_modules) : rien à télécharger en vol, et le service worker les
+   garde en cache. Les CDN ne restent qu'en repli, pour les environnements où
+   vendor/ n'existe pas — l'aperçu d'artefact, par exemple.
    ================================================================== */
 
-const PDFJS = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-const PDFJS_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-const CHORDSHEET_CDNS = [
+const PDFJS = [
+  "./vendor/pdf.min.js",
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js",
+];
+const PDFJS_WORKER = [
+  "./vendor/pdf.worker.min.js",
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js",
+];
+const CHORDSHEET = [
+  "./vendor/chordsheet.min.js",
   "https://cdnjs.cloudflare.com/ajax/libs/chordsheetjs/15.6.2/bundle.min.js",
   "https://cdn.jsdelivr.net/npm/chordsheetjs@15.6.2/lib/bundle.min.js",
   "https://unpkg.com/chordsheetjs@15.6.2/lib/bundle.min.js",
@@ -25,17 +37,26 @@ function loadScript(src) {
   });
 }
 
+/** Charge la première source qui répond et renvoie son URL. */
+async function loadFirst(sources) {
+  for (const src of sources) {
+    try { await loadScript(src); return src; } catch { /* source suivante */ }
+  }
+  throw new Error(sources[0]);
+}
+
 /** Ici, ni `new Worker(url_distante)` ni les blob: ne fonctionnent : le bac à
  *  sable réécrit les URL. Mais pdf.js sait travailler sur le thread principal
  *  si le script du worker est déjà chargé dans la page — il le retrouve via
  *  globalThis.pdfjsWorker et n'a alors plus rien à télécharger. */
 async function loadPdfJs() {
-  if (!window.pdfjsLib) await loadScript(PDFJS);
+  if (!window.pdfjsLib) await loadFirst(PDFJS);
   const lib = window.pdfjsLib;
+  let worker = PDFJS_WORKER[0];
   if (!window.pdfjsWorker) {
-    try { await loadScript(PDFJS_WORKER); } catch { /* signalé plus bas */ }
+    try { worker = await loadFirst(PDFJS_WORKER); } catch { /* signalé plus bas */ }
   }
-  lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+  lib.GlobalWorkerOptions.workerSrc = worker;
   return lib;
 }
 
@@ -44,7 +65,7 @@ async function openPdf(lib, data) {
     return await lib.getDocument({ data, isEvalSupported: false, verbosity: 0 }).promise;
   } catch (e) {
     if (!window.pdfjsWorker) {
-      throw new Error("le script pdf.worker n'a pas pu être chargé depuis le CDN");
+      throw new Error("le script pdf.worker n'a pas pu être chargé");
     }
     throw e;
   }
@@ -52,11 +73,11 @@ async function openPdf(lib, data) {
 
 async function loadChordSheetJS() {
   if (window.ChordSheetJS) return window.ChordSheetJS;
-  for (const url of CHORDSHEET_CDNS) {
+  for (const url of CHORDSHEET) {
     try {
       await loadScript(url);
       if (window.ChordSheetJS) return window.ChordSheetJS;
-    } catch { /* CDN suivant */ }
+    } catch { /* source suivante */ }
   }
   return null;
 }
@@ -658,8 +679,11 @@ const mergeByTitle = (prev, added) => {
 
 /* ------------------------------------------------------------------ */
 
+// Les polices sont chargées par un <link> de l'index.html, et non par un
+// @import ici : c'est ce qui permet au service worker de les garder en cache
+// pour les vols sans réseau. Sans elles, les polices système prennent le
+// relais (font-family plus bas).
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@700&display=swap');
 .cb, .cb * { box-sizing:border-box; }
 .cb { --bg:#111216; --panel:#181A1F; --panel2:#20232A; --line:#2E323B;
   --ink:#ECE9E3; --muted:#878C97; --amber:#E9B44C; --amber-dim:#8A6B2A; --hot:#C8503C;
@@ -1311,6 +1335,9 @@ export default function Carnet() {
   const resumeRef = useRef(null);
   const [status, setStatus] = useState("");
   const [report, setReport] = useState([]);
+  // window.offline est posé par main.jsx (service worker) ; absent dans un
+  // aperçu d'artefact, où le mode hors connexion n'existe pas.
+  const [offline, setOffline] = useState(() => (window.offline ? window.offline.get() : null));
   const sheetRef = useRef(null);
   const fileRef = useRef(null);
   const syncHashRef = useRef(false);
@@ -1356,6 +1383,11 @@ export default function Carnet() {
   }, []);
 
   useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort, barOpen, instrument }); }, [songs, showChords, size, speed, sort, barOpen, instrument, ready]);
+
+  // Un effet ne doit rien renvoyer d'autre qu'une fonction de nettoyage.
+  useEffect(() => (window.offline ? window.offline.subscribe(setOffline) : undefined), []);
+  // L'état affiché dans les Réglages est relu à l'ouverture de la page.
+  useEffect(() => { if (view === "settings" && window.offline) window.offline.refresh(); }, [view]);
 
   // La barre d'adresse n'est réécrite qu'une fois le partage activé
   // (ouverture d'un lien #data=… ou « Copier l'URL ») : elle reflète alors
@@ -1576,7 +1608,16 @@ export default function Carnet() {
   const library = useMemo(() => ({ songs, showChords, size, speed, sort }), [songs, showChords, size, speed, sort]);
   const shift = (n) => setSongs(songs.map((s) => (s.id === current.id ? { ...s, steps: Math.max(-6, Math.min(6, (s.steps || 0) + n)) } : s)));
 
-  const engine = CS ? "ChordSheetJS 15.6" : csTried ? "lecteur interne (CDN inaccessible)" : "chargement…";
+  const engine = CS ? "ChordSheetJS 15.6" : csTried ? "lecteur interne (librairie inaccessible)" : "chargement…";
+  const mo = (n) => (n / 1048576).toFixed(1).replace(".", ",") + " Mo";
+  const cached = offline && offline.vendor && offline.vendor.total > 0 && offline.vendor.done >= offline.vendor.total;
+  const offlineHint = !offline || !offline.supported
+    ? "Indisponible ici : garder l'application en cache demande un service worker, donc une page servie en HTTPS — c'est le cas sur GitHub Pages, pas dans un aperçu d'artefact."
+    : !offline.shell
+      ? "Mise en cache de l'application en cours…"
+      : cached
+        ? `Prêt pour l'avion ✓ — l'application démarre et le carnet se lit sans réseau, import de PDF compris (${mo(offline.vendor.total)} de librairies en cache).`
+        : `L'application démarre et le carnet se lit déjà sans réseau. Pour l'import de PDF, il reste ${mo(Math.max(0, offline.vendor.total - offline.vendor.done))} à mettre en cache.`;
   const appVersion = useMemo(() => {
     const s = document.querySelector('script[src*="app.js"]');
     const m = s && /[?&]v=([0-9a-f]+)/.exec(s.getAttribute("src") || "");
@@ -1594,6 +1635,7 @@ export default function Carnet() {
           <>
             <div className="brand">Carnet <span>d'accords</span></div>
             <VU />
+            {offline && !offline.online && <span className="tag">hors ligne</span>}
             <div className="spacer" />
             <button className="iconbtn" title="Importer des PDF" onClick={() => fileRef.current?.click()}>⤓</button>
             <button className="iconbtn" title="Saisir une grille" onClick={startNew}>＋</button>
@@ -1795,15 +1837,34 @@ export default function Carnet() {
         <div className="form">
           <div className="forminner">
             <div className="field">
+              <label>Mode avion</label>
+              <p className="hint">{offlineHint}</p>
+              <p className="hint" style={{ marginTop: 6 }}>
+                Pour l'avoir en plein écran, sans barre d'adresse : sur iPhone, menu Partager
+                → « Sur l'écran d'accueil » ; sur Android, menu ⋮ → « Installer l'application ».
+              </p>
+            </div>
+            {offline && offline.supported && (
+              <div className="actions">
+                <button className="btn" disabled={offline.warming || cached}
+                  onClick={() => window.offline.warm()}>
+                  {offline.warming ? "Préparation…" : cached ? "Tout est en cache" : "Préparer le mode avion"}
+                </button>
+              </div>
+            )}
+            <div className="field">
               <label>Mise à jour</label>
               <p className="hint">
-                Version du code : <b>{appVersion}</b>. Si l'application semble en retard sur la
-                dernière version publiée, ce bouton recharge la page en contournant le cache du
-                navigateur — sans toucher à vos données.
+                Version du code : <b>{appVersion}</b>.{" "}
+                {offline && offline.waiting
+                  ? "Une nouvelle version est prête : ce bouton l'installe et recharge la page — sans toucher à vos données."
+                  : "Si l'application semble en retard sur la dernière version publiée, ce bouton recharge la page en contournant le cache du navigateur — sans toucher à vos données."}
               </p>
             </div>
             <div className="actions">
-              <button className="btn" onClick={() => reloadFresh(true)}>Recharger la dernière version</button>
+              {offline && offline.waiting
+                ? <button className="btn primary" onClick={() => window.offline.update()}>Installer la nouvelle version</button>
+                : <button className="btn" onClick={() => reloadFresh(true)}>Recharger la dernière version</button>}
             </div>
             <div className="field">
               <label>Stockage</label>
