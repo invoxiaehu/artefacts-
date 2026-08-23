@@ -671,6 +671,81 @@ async function libraryFromHash(hash) {
   return decodeShareData(data);
 }
 
+/* ------------------------------------------------------------------ */
+/* Tags : un classement personnel, propre à l'appareil                 */
+/*                                                                     */
+/* Ils ne voyagent PAS dans l'URL de partage — un classement est       */
+/* personnel, et l'URL n'a pas à grossir pour ça — mais ils entrent    */
+/* dans la sauvegarde en fichier, sinon un changement de téléphone      */
+/* effacerait tout le travail de classement.                            */
+/*                                                                     */
+/* L'ancre d'une chanson est « titre + artiste » normalisés : les ids    */
+/* sont régénérés à chaque import (normalizeLibrary), ils ne peuvent    */
+/* donc pas servir de clé.                                              */
+/* ------------------------------------------------------------------ */
+
+const TAGS_KEY = "tags:v1";
+const normPart = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const songKey = (song) => (song ? `${normPart(song.title)}|${normPart(song.artist)}` : "");
+
+const TAG_COLORS = ["#E9B44C", "#7FB3D5", "#86C48B", "#C8503C", "#B98BD9", "#E08A5B"];
+const DEFAULT_TAGS = [
+  { id: "piano", label: "Piano", icon: "🎹", color: "#7FB3D5" },
+  { id: "guitar", label: "Guitar", icon: "🎸", color: "#E9B44C" },
+  { id: "new", label: "New", icon: "✨", color: "#86C48B" },
+  { id: "favorite", label: "Favorite", icon: "★", color: "#C8503C" },
+];
+const freshTags = () => ({ defs: DEFAULT_TAGS.map((t) => ({ ...t })), byKey: {} });
+
+/** Valide un bloc de tags venu de l'extérieur (fichier de sauvegarde) : on
+ *  n'accepte que des définitions exploitables, et jamais une affectation qui
+ *  pointerait vers un tag inconnu. */
+function normalizeTags(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const defs = [];
+  const ids = new Set();
+  for (const d of Array.isArray(raw.defs) ? raw.defs : []) {
+    if (!d || typeof d !== "object") continue;
+    const id = String(d.id || "").replace(/[^\w-]/g, "").slice(0, 40);
+    const label = String(d.label || "").trim().slice(0, 24);
+    if (!id || !label || ids.has(id)) continue;
+    ids.add(id);
+    defs.push({
+      id, label,
+      icon: String(d.icon || "●").slice(0, 4),
+      color: /^#[0-9a-f]{6}$/i.test(d.color) ? d.color : TAG_COLORS[0],
+    });
+  }
+  const byKey = {};
+  for (const [k, list] of Object.entries(raw.byKey && typeof raw.byKey === "object" ? raw.byKey : {})) {
+    if (!k || !Array.isArray(list)) continue;
+    const keep = [...new Set(list.filter((id) => ids.has(id)))];
+    if (keep.length) byKey[k.slice(0, 200)] = keep;
+  }
+  return { defs, byKey };
+}
+
+/** Fusion la moins destructrice possible : les définitions inconnues
+ *  s'ajoutent, les affectations s'unissent, rien n'est retiré. */
+function mergeTags(prev, added) {
+  if (!added) return prev;
+  const defs = [...prev.defs];
+  for (const d of added.defs) if (!defs.some((x) => x.id === d.id)) defs.push(d);
+  const byKey = { ...prev.byKey };
+  for (const [k, list] of Object.entries(added.byKey)) {
+    const keep = [...new Set([...(byKey[k] || []), ...list])].filter((id) => defs.some((d) => d.id === id));
+    if (keep.length) byKey[k] = keep;
+  }
+  return { defs, byKey };
+}
+
+async function loadTags() {
+  try { const r = await window.storage.get(TAGS_KEY); return r ? normalizeTags(JSON.parse(r.value)) : null; } catch { return null; }
+}
+async function saveTags(t) {
+  try { await window.storage.set(TAGS_KEY, JSON.stringify(t)); } catch { /* hors ligne */ }
+}
+
 const fmtBytes = (n) => (n < 1024 ? `${n} o` : `${(n / 1024).toFixed(1)} Ko`);
 const mergeByTitle = (prev, added) => {
   const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -741,6 +816,21 @@ const CSS = `
 .card p { margin:2px 0 0; font-size:12.5px; color:var(--muted); }
 .tag { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em; text-transform:uppercase; border:1px solid var(--line);
   color:var(--muted); border-radius:6px; padding:3px 7px; flex:0 0 auto; }
+/* Tags : icône seule dans la liste, icône + nom partout où la place existe. */
+.tagrow { display:flex; gap:4px; flex:0 0 auto; }
+.tagdot { font-size:13px; line-height:1.15; padding:3px 5px; border-radius:6px; border:1px solid; }
+.tagchip { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:8px;
+  border:1px solid var(--line); background:var(--panel2); color:var(--muted); font-size:12.5px; }
+.tagchip b { font-family:'JetBrains Mono'; font-size:10px; }
+.tagchip:hover { border-color:var(--amber-dim); }
+.tagpick { display:flex; gap:6px; flex-wrap:wrap; width:100%; }
+.tagedit { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.tagedit input { flex:1; min-width:110px; padding:10px 12px; border-radius:9px; border:1px solid var(--line);
+  background:var(--panel); color:var(--ink); font-size:15px; }
+.tagedit input.tagicon { flex:0 0 54px; min-width:0; text-align:center; font-size:17px; padding:9px 4px; }
+.swatches { display:flex; gap:5px; }
+.swatch { width:22px; height:22px; border-radius:6px; border:1px solid rgba(0,0,0,.35); }
+.swatch.on { box-shadow:0 0 0 2px var(--bg), 0 0 0 4px var(--ink); }
 .tag.full { color:var(--amber); border-color:var(--amber-dim); }
 .empty { text-align:center; padding:44px 20px; color:var(--muted); }
 .empty h2 { font-family:'Barlow Condensed'; text-transform:uppercase; letter-spacing:.1em; color:var(--ink); font-size:22px; margin:0 0 8px; }
@@ -1199,7 +1289,7 @@ function Editor({ draft, setDraft, onSave, onCancel, onDelete }) {
   );
 }
 
-function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
+function Transfer({ library, tags, engine, onImport, onShareUrl, onClose }) {
   const { songs } = library;
   const [text, setText] = useState("");
   const [msg, setMsg] = useState("");
@@ -1207,7 +1297,11 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
   const [share, setShare] = useState(null);
   const [fileMsg, setFileMsg] = useState("");
   const fileRef = useRef(null);
-  const json = useMemo(() => JSON.stringify(songs.map(({ id, ...r }) => r), null, 1), [songs]);
+  // Le fichier de sauvegarde porte les grilles ET les tags ; l'URL de partage,
+  // elle, ne reçoit que le carnet (encodeShare(library) plus bas).
+  const json = useMemo(
+    () => JSON.stringify({ songs: songs.map(({ id, ...r }) => r), tags }, null, 1),
+    [songs, tags]);
 
   useEffect(() => {
     let alive = true;
@@ -1234,15 +1328,19 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
     }
     try {
       let lib;
+      let addedTags = null;
       if (/^[\[{]/.test(t)) {
-        lib = normalizeLibrary(JSON.parse(t));
+        const parsed = JSON.parse(t);
+        lib = normalizeLibrary(parsed);
+        addedTags = normalizeTags(parsed && parsed.tags);
       } else {
         const data = extractShareData(t);
         if (!data) throw new Error();
         lib = await decodeShareData(data);
       }
-      onImport(lib.songs, lib);
-      setMsg(`${lib.songs.length} grille(s) ajoutée(s).`);
+      onImport(lib.songs, lib, addedTags);
+      const withTags = addedTags && (addedTags.defs.length || Object.keys(addedTags.byKey).length);
+      setMsg(`${lib.songs.length} grille(s) ajoutée(s)${withTags ? ", tags compris" : ""}.`);
       if (raw == null) setText("");
     } catch {
       setMsg("Texte non reconnu. Attendu : une liste JSON avec title, artist et body, ou un code/URL généré par « Partager par URL ».");
@@ -1344,7 +1442,7 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
           </p>
         </div>
         <div className="field">
-          <label>Sauvegarde du carnet (JSON)</label>
+          <label>Sauvegarde du carnet (JSON) — grilles et tags</label>
           <textarea readOnly value={json} style={{ minHeight: 140 }} onFocus={(e) => e.target.select()} />
           <p className="hint" style={{ marginTop: 6 }}>
             {isIOS
@@ -1416,6 +1514,8 @@ export default function Carnet() {
   // window.offline est posé par main.jsx (service worker) ; absent dans un
   // aperçu d'artefact, où le mode hors connexion n'existe pas.
   const [offline, setOffline] = useState(() => (window.offline ? window.offline.get() : null));
+  const [tags, setTags] = useState(freshTags);
+  const [tagFilter, setTagFilter] = useState([]);
   const sheetRef = useRef(null);
   const fileRef = useRef(null);
   const syncHashRef = useRef(false);
@@ -1445,6 +1545,12 @@ export default function Carnet() {
           + String(e && e.message ? e.message : e).slice(0, 120) + ")");
       }
       setSongs(carnet.songs);
+      // Tags : hors du carnet partagé, donc chargés à part. Un enregistrement
+      // vide est respecté (tags tous supprimés) ; seule leur absence remet les
+      // quatre tags par défaut.
+      const saved = await loadTags();
+      if (!alive) return;
+      if (saved) setTags(saved);
       if (typeof carnet.showChords === "boolean") setShowChords(carnet.showChords);
       if (carnet.size) setSize(carnet.size);
       if (carnet.speed) setSpeed(carnet.speed);
@@ -1461,6 +1567,7 @@ export default function Carnet() {
   }, []);
 
   useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort, barOpen, instrument }); }, [songs, showChords, size, speed, sort, barOpen, instrument, ready]);
+  useEffect(() => { if (ready) saveTags(tags); }, [tags, ready]);
 
   // Un effet ne doit rien renvoyer d'autre qu'une fonction de nettoyage.
   useEffect(() => (window.offline ? window.offline.subscribe(setOffline) : undefined), []);
@@ -1600,11 +1707,18 @@ export default function Carnet() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = q ? songs.filter((s) => (s.title + " " + s.artist).toLowerCase().includes(q)) : songs;
+    let list = q ? songs.filter((s) => (s.title + " " + s.artist).toLowerCase().includes(q)) : songs;
+    // Filtres cumulés : « Piano » et « Favorite » donnent les favorites au piano.
+    if (tagFilter.length) {
+      list = list.filter((s) => {
+        const ids = tags.byKey[songKey(s)] || [];
+        return tagFilter.every((id) => ids.includes(id));
+      });
+    }
     const key = sort === "artist" ? (s) => (s.artist || "").trim() : (s) => s.title;
     return [...list].sort((a, b) =>
       key(a).localeCompare(key(b), "fr") || a.title.localeCompare(b.title, "fr"));
-  }, [songs, query, sort]);
+  }, [songs, query, sort, tagFilter, tags]);
 
   const importPdfs = async (files) => {
     if (!files || !files.length) return;
@@ -1648,7 +1762,9 @@ export default function Carnet() {
     if (!draft.body.trim()) return;
     const title = draft.title.trim() || "Sans titre";
     if (current) {
-      setSongs(songs.map((s) => (s.id === current.id ? { ...s, title, artist: draft.artist.trim(), body: draft.body } : s)));
+      const renamed = { title, artist: draft.artist.trim() };
+      moveTags(songKey(current), songKey(renamed));
+      setSongs(songs.map((s) => (s.id === current.id ? { ...s, ...renamed, body: draft.body } : s)));
     } else {
       const song = { id: uid(), title, artist: draft.artist.trim(), body: draft.body, steps: 0 };
       setSongs([...songs, song]); setCurrentId(song.id);
@@ -1674,7 +1790,52 @@ export default function Carnet() {
     await clearLibrary();
     reloadFresh(false); // repart à neuf, sans le fragment ni le cache
   };
-  const importLibrary = (list, settings) => {
+  const tagsOf = (song) => {
+    const ids = tags.byKey[songKey(song)] || [];
+    return tags.defs.filter((d) => ids.includes(d.id));
+  };
+  const hasTag = (song, id) => (tags.byKey[songKey(song)] || []).includes(id);
+  const toggleTag = (song, id) => setTags((t) => {
+    const k = songKey(song);
+    const cur = t.byKey[k] || [];
+    const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    const byKey = { ...t.byKey };
+    if (next.length) byKey[k] = next; else delete byKey[k];
+    return { ...t, byKey };
+  });
+  /** Renommer une chanson déplace son ancre : les tags suivent. */
+  const moveTags = (from, to) => setTags((t) => {
+    if (from === to || !t.byKey[from]) return t;
+    const byKey = { ...t.byKey };
+    byKey[to] = [...new Set([...(byKey[to] || []), ...byKey[from]])];
+    delete byKey[from];
+    return { ...t, byKey };
+  });
+  const setTagField = (id, field, value) => setTags((t) => ({
+    ...t, defs: t.defs.map((d) => (d.id === id ? { ...d, [field]: value } : d)),
+  }));
+  const addTag = () => setTags((t) => ({
+    ...t,
+    defs: [...t.defs, { id: "t" + uid(), label: "Nouveau tag", icon: "●", color: TAG_COLORS[t.defs.length % TAG_COLORS.length] }],
+  }));
+  const removeTag = (id) => {
+    const def = tags.defs.find((d) => d.id === id);
+    if (def && !window.confirm(`Supprimer le tag « ${def.label} » ? Il sera retiré de toutes les chansons.`)) return;
+    setTagFilter((f) => f.filter((x) => x !== id));
+    setTags((t) => {
+      const byKey = {};
+      for (const [k, list] of Object.entries(t.byKey)) {
+        const keep = list.filter((x) => x !== id);
+        if (keep.length) byKey[k] = keep;
+      }
+      return { defs: t.defs.filter((d) => d.id !== id), byKey };
+    });
+  };
+  const restoreDefaultTags = () => setTags((t) => mergeTags(t, { defs: DEFAULT_TAGS.map((d) => ({ ...d })), byKey: {} }));
+  const missingDefaults = DEFAULT_TAGS.some((d) => !tags.defs.some((x) => x.id === d.id));
+
+  const importLibrary = (list, settings, addedTags) => {
+    if (addedTags) setTags((t) => mergeTags(t, addedTags));
     setSongs((prev) => mergeByTitle(prev, list));
     if (settings) {
       if (typeof settings.showChords === "boolean") setShowChords(settings.showChords);
@@ -1754,6 +1915,26 @@ export default function Carnet() {
                 <button className="btn slim" onClick={openRandom} title="Ouvrir une chanson au hasard">🎲 Au hasard</button>
               </div>
             )}
+            {songs.length > 0 && tags.defs.length > 0 && (
+              <div className="toolrow">
+                <span className="lab">Tags</span>
+                {tags.defs.map((t) => {
+                  const on = tagFilter.includes(t.id);
+                  const count = songs.filter((s) => hasTag(s, t.id)).length;
+                  return (
+                    <button key={t.id} className={"tagchip" + (on ? " on" : "")} aria-pressed={on}
+                      title={`${t.label} — ${count} chanson${count > 1 ? "s" : ""}`}
+                      style={on ? { color: t.color, borderColor: t.color, background: t.color + "22" } : undefined}
+                      onClick={() => setTagFilter((f) => (on ? f.filter((x) => x !== t.id) : [...f, t.id]))}>
+                      <span>{t.icon}</span>{count > 0 && <b>{count}</b>}
+                    </button>
+                  );
+                })}
+                {tagFilter.length > 0 && (
+                  <button className="btn slim" onClick={() => setTagFilter([])}>Tout voir</button>
+                )}
+              </div>
+            )}
             {status && (
               <div className="notice">
                 <button className="noticeclose" title="Fermer" aria-label="Fermer le message"
@@ -1792,18 +1973,28 @@ export default function Carnet() {
             {ready && songs.length > 0 && filtered.length === 0 && (
               <div className="empty"><p>Rien ne correspond à « {query} ».</p></div>
             )}
-            {filtered.map((s) => (
+            {filtered.map((s) => {
+              const marks = tagsOf(s);
+              return (
               <div className="card" key={s.id}>
                 <button className="cardmain" onClick={() => openSong(s.id)}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <h3>{s.title}</h3>
                     <p>{s.artist || "Artiste inconnu"}</p>
                   </div>
-                  <span className="tag full">{(s.body.match(/^\s*\[[^\]]+\]\s*$/gm) || []).length || "—"} sect.</span>
+                  {marks.length > 0 && (
+                    <span className="tagrow">
+                      {marks.map((t) => (
+                        <span key={t.id} className="tagdot" title={t.label}
+                          style={{ borderColor: t.color + "66", background: t.color + "1f" }}>{t.icon}</span>
+                      ))}
+                    </span>
+                  )}
                 </button>
                 <button className="carddel" title={`Supprimer « ${s.title} »`} onClick={() => removeSong(s)}>✕</button>
               </div>
-            ))}
+              );
+            })}
           </div>
         </>
       )}
@@ -1818,6 +2009,20 @@ export default function Carnet() {
             <p className="artist">{current.artist || "Artiste inconnu"}</p>
             <div className={"barwrap" + (barOpen ? "" : " folded")}>
             <div className="bar">
+              {tags.defs.length > 0 && (
+                <div className="tagpick">
+                  {tags.defs.map((t) => {
+                    const on = hasTag(current, t.id);
+                    return (
+                      <button key={t.id} className={"tagchip" + (on ? " on" : "")} aria-pressed={on}
+                        style={on ? { color: t.color, borderColor: t.color, background: t.color + "22" } : undefined}
+                        onClick={() => toggleTag(current, t.id)}>
+                        <span>{t.icon}</span><span>{t.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               <button className={"switch" + (showChords ? " on" : "")} aria-pressed={showChords} onClick={() => setShowChords(!showChords)}>
                 <span className="track"><span className="knob" /></span><label>Accords</label>
               </button>
@@ -1914,7 +2119,8 @@ export default function Carnet() {
       )}
 
       {view === "transfer" && (
-        <Transfer library={library} engine={engine} onClose={() => setView("lib")} onImport={importLibrary} onShareUrl={shareUrl} />
+        <Transfer library={library} tags={tags} engine={engine} onClose={() => setView("lib")}
+          onImport={importLibrary} onShareUrl={shareUrl} />
       )}
 
       {view === "settings" && (
@@ -1949,6 +2155,36 @@ export default function Carnet() {
               {offline && offline.waiting
                 ? <button className="btn primary" onClick={() => window.offline.update()}>Installer la nouvelle version</button>
                 : <button className="btn" onClick={() => reloadFresh(true)}>Recharger la dernière version</button>}
+            </div>
+            <div className="field">
+              <label>Tags</label>
+              <p className="hint">
+                Une chanson peut en porter plusieurs ; seules les icônes s'affichent dans la liste.
+                Ils restent sur cet appareil et n'entrent pas dans l'URL de partage — un classement
+                est personnel — mais la sauvegarde en fichier (⇅) les emporte.
+              </p>
+            </div>
+            {tags.defs.map((t) => (
+              <div className="tagedit" key={t.id}>
+                <input className="tagicon" value={t.icon} maxLength={4} aria-label={`Icône du tag ${t.label}`}
+                  onChange={(e) => setTagField(t.id, "icon", e.target.value)} />
+                <input value={t.label} maxLength={24} aria-label="Nom du tag"
+                  onChange={(e) => setTagField(t.id, "label", e.target.value)} />
+                <div className="swatches">
+                  {TAG_COLORS.map((c) => (
+                    <button key={c} className={"swatch" + (c === t.color ? " on" : "")} style={{ background: c }}
+                      aria-label={`Couleur ${c}`} aria-pressed={c === t.color}
+                      onClick={() => setTagField(t.id, "color", c)} />
+                  ))}
+                </div>
+                <button className="carddel" title={`Supprimer le tag ${t.label}`} onClick={() => removeTag(t.id)}>✕</button>
+              </div>
+            ))}
+            <div className="actions">
+              <button className="btn" onClick={addTag}>Ajouter un tag</button>
+              {missingDefaults && (
+                <button className="btn ghost" onClick={restoreDefaultTags}>Rétablir les tags par défaut</button>
+              )}
             </div>
             <div className="field">
               <label>Stockage</label>
