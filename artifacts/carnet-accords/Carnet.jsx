@@ -1201,6 +1201,8 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
   const [msg, setMsg] = useState("");
   const [urlMsg, setUrlMsg] = useState("");
   const [share, setShare] = useState(null);
+  const [fileMsg, setFileMsg] = useState("");
+  const fileRef = useRef(null);
   const json = useMemo(() => JSON.stringify(songs.map(({ id, ...r }) => r), null, 1), [songs]);
 
   useEffect(() => {
@@ -1220,8 +1222,8 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
     return () => { alive = false; };
   }, [library, songs.length]);
 
-  const doImport = async () => {
-    const t = text.trim();
+  const doImport = async (raw) => {
+    const t = String(raw == null ? text : raw).trim();
     if (!t) return;
     try {
       let lib;
@@ -1234,9 +1236,48 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
       }
       onImport(lib.songs, lib);
       setMsg(`${lib.songs.length} grille(s) ajoutée(s).`);
-      setText("");
+      if (raw == null) setText("");
     } catch {
       setMsg("Texte non reconnu. Attendu : une liste JSON avec title, artist et body, ou un code/URL généré par « Partager par URL ».");
+    }
+  };
+
+  /** Sur iPhone, la feuille de partage d'un *fichier* propose « Enregistrer dans
+   *  Fichiers », donc iCloud Drive — et elle fonctionne depuis l'app installée, là
+   *  où un téléchargement classique est capricieux. Ailleurs, téléchargement. Rien
+   *  d'asynchrone avant navigator.share : le geste de l'utilisateur serait perdu. */
+  const saveFile = () => {
+    const name = `carnet-accords-${new Date().toISOString().slice(0, 10)}.json`;
+    const file = new File([json], name, { type: "application/json" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      setFileMsg("");
+      navigator.share({ files: [file], title: "Sauvegarde du Carnet d'accords" })
+        .then(() => setFileMsg(`${name} — choisissez « Enregistrer dans Fichiers » pour le ranger dans iCloud Drive.`))
+        .catch((e) => { if (e && e.name !== "AbortError") setFileMsg("Partage refusé par le navigateur : utilisez « Copier » juste à côté."); });
+      return;
+    }
+    try {
+      const url = URL.createObjectURL(file);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      setFileMsg(`Fichier enregistré : ${name}`);
+    } catch {
+      setFileMsg("Enregistrement impossible dans ce navigateur : utilisez « Copier ».");
+    }
+  };
+
+  const readFile = async (file) => {
+    if (!file) return;
+    setFileMsg("");
+    try {
+      await doImport(await file.text());
+    } catch {
+      setMsg("Fichier illisible.");
     }
   };
 
@@ -1298,10 +1339,17 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
         <div className="field">
           <label>Sauvegarde du carnet (JSON)</label>
           <textarea readOnly value={json} style={{ minHeight: 140 }} onFocus={(e) => e.target.select()} />
+          <p className="hint" style={{ marginTop: 6 }}>
+            {isIOS
+              ? <>« Enregistrer un fichier » ouvre la feuille de partage : choisissez <b>Enregistrer dans Fichiers</b> pour déposer la sauvegarde dans iCloud Drive. Elle se relit plus bas avec « Depuis un fichier ».</>
+              : <>« Enregistrer un fichier » télécharge la sauvegarde datée ; elle se relit plus bas avec « Depuis un fichier ».</>}
+          </p>
         </div>
         <div className="actions">
+          <button className="btn primary" disabled={!songs.length} onClick={saveFile}>Enregistrer un fichier</button>
           <button className="btn ghost" onClick={() => navigator.clipboard?.writeText(json)}>Copier</button>
         </div>
+        {fileMsg && <p className="hint">{fileMsg}</p>}
         <div className="field">
           <label htmlFor="imp">Restaurer ou ajouter — JSON, code compressé ou URL partagée</label>
           <textarea id="imp" value={text} placeholder={'[{"title":"…","artist":"…","body":"…"}]  ou  https://…#v=1&data=…'}
@@ -1309,9 +1357,12 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
         </div>
         {msg && <p className="hint">{msg}</p>}
         <div className="actions">
-          <button className="btn primary" onClick={doImport}>Importer</button>
+          <button className="btn primary" onClick={() => doImport()}>Importer</button>
+          <button className="btn" onClick={() => fileRef.current?.click()}>Depuis un fichier…</button>
           <button className="btn ghost" onClick={onClose}>Retour</button>
         </div>
+        <input ref={fileRef} type="file" accept=".json,application/json,text/plain" hidden
+          onChange={(e) => { readFile(e.target.files && e.target.files[0]); e.target.value = ""; }} />
         <p className="engine">Moteur d'analyse : {engine}</p>
       </div>
     </div>
