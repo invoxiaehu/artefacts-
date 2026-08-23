@@ -697,6 +697,10 @@ const CSS = `
   padding-left:var(--sal); padding-right:var(--sar);
   font-family:'Archivo', ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing:antialiased; overflow:hidden; }
 .cb button { font:inherit; color:inherit; background:none; border:none; cursor:pointer; }
+/* Champs de fichier pilotés par un bouton : rendus mais invisibles. Un input en
+   display:none n'ouvre pas toujours le sélecteur iOS quand on le clique par script. */
+.vhide { position:absolute; width:1px; height:1px; padding:0; margin:-1px; border:0;
+  overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); opacity:0; }
 .cb :focus-visible { outline:2px solid var(--amber); outline-offset:2px; }
 .top { display:flex; align-items:center; gap:12px; padding:calc(12px + var(--sat)) 16px 10px;
   border-bottom:1px solid var(--line); background:var(--panel); flex:0 0 auto; }
@@ -1224,7 +1228,10 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
 
   const doImport = async (raw) => {
     const t = String(raw == null ? text : raw).trim();
-    if (!t) return;
+    if (!t) {
+      setMsg("Rien à importer : choisissez un fichier ci-dessus, ou collez un JSON, un code compressé ou une URL de partage.");
+      return;
+    }
     try {
       let lib;
       if (/^[\[{]/.test(t)) {
@@ -1341,8 +1348,8 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
           <textarea readOnly value={json} style={{ minHeight: 140 }} onFocus={(e) => e.target.select()} />
           <p className="hint" style={{ marginTop: 6 }}>
             {isIOS
-              ? <>« Enregistrer un fichier » ouvre la feuille de partage : choisissez <b>Enregistrer dans Fichiers</b> pour déposer la sauvegarde dans iCloud Drive. Elle se relit plus bas avec « Depuis un fichier ».</>
-              : <>« Enregistrer un fichier » télécharge la sauvegarde datée ; elle se relit plus bas avec « Depuis un fichier ».</>}
+              ? <>« Enregistrer un fichier » ouvre la feuille de partage : choisissez <b>Enregistrer dans Fichiers</b> pour déposer la sauvegarde dans iCloud Drive. Elle se relit plus bas avec « Choisir un fichier ».</>
+              : <>« Enregistrer un fichier » télécharge la sauvegarde datée ; elle se relit plus bas avec « Choisir un fichier ».</>}
           </p>
         </div>
         <div className="actions">
@@ -1351,17 +1358,28 @@ function Transfer({ library, engine, onImport, onShareUrl, onClose }) {
         </div>
         {fileMsg && <p className="hint">{fileMsg}</p>}
         <div className="field">
-          <label htmlFor="imp">Restaurer ou ajouter — JSON, code compressé ou URL partagée</label>
+          <label>Restaurer depuis un fichier</label>
+          <p className="hint">
+            Une sauvegarde <b>.json</b> enregistrée plus haut, reprise dans Fichiers, iCloud Drive ou
+            vos téléchargements. Les grilles s'ajoutent au carnet en place ; à titre identique, celle
+            du fichier gagne.
+          </p>
+        </div>
+        <div className="actions">
+          <button className="btn primary" onClick={() => fileRef.current?.click()}>Choisir un fichier…</button>
+        </div>
+        <div className="field">
+          <label htmlFor="imp">Ou coller — JSON, code compressé ou URL partagée</label>
           <textarea id="imp" value={text} placeholder={'[{"title":"…","artist":"…","body":"…"}]  ou  https://…#v=1&data=…'}
             style={{ minHeight: 140 }} onChange={(e) => setText(e.target.value)} />
         </div>
         {msg && <p className="hint">{msg}</p>}
         <div className="actions">
-          <button className="btn primary" onClick={() => doImport()}>Importer</button>
-          <button className="btn" onClick={() => fileRef.current?.click()}>Depuis un fichier…</button>
+          <button className="btn" onClick={() => doImport()}>Importer le texte collé</button>
           <button className="btn ghost" onClick={onClose}>Retour</button>
         </div>
-        <input ref={fileRef} type="file" accept=".json,application/json,text/plain" hidden
+        <input ref={fileRef} type="file" accept=".json,application/json,text/plain"
+          className="vhide" tabIndex={-1} aria-hidden="true"
           onChange={(e) => { readFile(e.target.files && e.target.files[0]); e.target.value = ""; }} />
         <p className="engine">Moteur d'analyse : {engine}</p>
       </div>
@@ -1687,7 +1705,8 @@ export default function Carnet() {
   return (
     <div className="cb">
       <style>{CSS}</style>
-      <input ref={fileRef} type="file" accept="application/pdf,.pdf" multiple hidden
+      <input ref={fileRef} type="file" accept="application/pdf,.pdf" multiple
+        className="vhide" tabIndex={-1} aria-hidden="true"
         onChange={(e) => { importPdfs(e.target.files); e.target.value = ""; }} />
 
       <div className="top">
