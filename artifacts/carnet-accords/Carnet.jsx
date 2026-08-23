@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 
 /* ==================================================================
    Deux librairies font le travail :
@@ -160,7 +160,7 @@ function isChordToken(raw) {
   const parts = m[2].split("/");
   if (parts.length > 2) return false;
   if (parts.length === 2 && !/^[A-G][#b]?$/.test(parts[1])) return false;
-  return /^(?:maj|min|m|M|aug|dim|sus|add|°|Δ|\+|-|\d|\(|\)|#|b)*$/.test(parts[0]);
+  return /^(?:Maj|maj|min|m|M|aug|dim|sus|add|°|Δ|ø|\+|-|\d|\(|\)|#|b)*$/.test(parts[0]);
 }
 const isChordLine = (line) => {
   const t = line.trim();
@@ -307,6 +307,221 @@ function blocksFallback(text, steps, flats) {
     }
   }
   return collapse(blocks);
+}
+
+/* ------------------------------------------------------------------ */
+/* Moteur d'accords : du symbole ("F#m7", "D/F#") aux notes et aux     */
+/* doigtés. Tout est embarqué — aucune librairie, aucun réseau.        */
+/* ------------------------------------------------------------------ */
+
+/** Intervalles en demi-tons depuis la fondamentale, par suffixe normalisé. */
+const CHORD_FORMULAS = {
+  "": [0, 4, 7], m: [0, 3, 7], 5: [0, 7],
+  7: [0, 4, 7, 10], maj7: [0, 4, 7, 11], m7: [0, 3, 7, 10],
+  dim: [0, 3, 6], dim7: [0, 3, 6, 9], m7b5: [0, 3, 6, 10],
+  aug: [0, 4, 8], sus2: [0, 2, 7], sus4: [0, 5, 7], "7sus4": [0, 5, 7, 10],
+  6: [0, 4, 7, 9], m6: [0, 3, 7, 9], 69: [0, 4, 7, 9, 14],
+  add9: [0, 4, 7, 14], madd9: [0, 3, 7, 14],
+  9: [0, 4, 7, 10, 14], m9: [0, 3, 7, 10, 14], maj9: [0, 4, 7, 11, 14],
+  11: [0, 4, 7, 10, 17], 13: [0, 4, 7, 10, 21],
+  "7b9": [0, 4, 7, 10, 13], "7#9": [0, 4, 7, 10, 15], mmaj7: [0, 3, 7, 11],
+};
+
+/** Ramène les graphies rencontrées dans la nature (Δ, °, M7, min, -, +…)
+ *  vers les clés de CHORD_FORMULAS. Suffixe inconnu : on rogne la fin
+ *  jusqu'à retrouver une formule connue — exact:false le signale. */
+function normalizeSuffix(s) {
+  let x = (s || "")
+    .replace(/[()]/g, "")
+    .replace(/Δ/g, "maj7")
+    .replace(/ø/g, "m7b5")
+    .replace(/°7/g, "dim7").replace(/°/g, "dim")
+    .replace(/^\+/, "aug").replace(/^-/, "m")
+    .replace(/^min/, "m").replace(/^Maj/, "maj")
+    .replace(/^M$/, "maj").replace(/^M(?=\d)/, "maj");
+  if (x === "maj") x = "";
+  if (x === "sus") x = "sus4";
+  if (x === "7sus") x = "7sus4";
+  if (x === "add2" || x === "2") x = "add9";
+  if (CHORD_FORMULAS[x] !== undefined) return { suffix: x, exact: true };
+  for (let cut = x.length - 1; cut > 0; cut--) {
+    const head = x.slice(0, cut);
+    if (CHORD_FORMULAS[head] !== undefined) return { suffix: head, exact: false };
+  }
+  return { suffix: "", exact: x === "" };
+}
+
+/** "F#m7/C#" → { root, rootSemi, suffix, intervals, bass, bassSemi, exact, label }.
+ *  null pour tout ce qui n'est pas un accord jouable : jetons de structure
+ *  (N.C., x2, |, %) — qu'isChordToken accepte mais qui ne se visualisent pas. */
+function parseChordSymbol(raw) {
+  const t = (raw || "").replace(/[,|.]+$/, "");
+  if (!t || /^(N\.?C\.?|x\d+|\|+|%)$/i.test(t)) return null;
+  const m = /^([A-G][#b]?)([^/]*)(?:\/([A-G][#b]?))?$/.exec(t);
+  if (!m || SEMIS[m[1]] === undefined) return null;
+  const { suffix, exact } = normalizeSuffix(m[2]);
+  const bass = m[3] && SEMIS[m[3]] !== undefined ? m[3] : null;
+  return {
+    root: m[1], rootSemi: SEMIS[m[1]], suffix, intervals: CHORD_FORMULAS[suffix],
+    bass, bassSemi: bass ? SEMIS[bass] : null, exact, label: t,
+  };
+}
+
+/** Noms des notes de l'accord, en bémols si le symbole est écrit en bémols. */
+function chordNoteNames(parsed) {
+  const flats = /^[A-G]b/.test(parsed.root) || (parsed.bass ? /^[A-G]b/.test(parsed.bass) : false);
+  const scale = flats ? FLATS : SHARPS;
+  return parsed.intervals.map((iv) => scale[(parsed.rootSemi + iv) % 12]);
+}
+
+/* --- Guitare : un petit dictionnaire de formes, pas une base de données ---
+   frets : 6 valeurs, corde Mi grave → Mi aigu ; -1 = étouffée.
+   Formes MOBILES (GUITAR_SHAPES) : relatives au barré (0 = barré/sillet),
+   transposées le long du manche selon la fondamentale. rootString 6 = type E,
+   rootString 5 = type A. barre:0 = barré complet une fois décalé.
+   Formes OUVERTES (OPEN_SHAPES) : doigtés exacts, clé = symbole complet,
+   y compris les basses slash courantes. */
+const GUITAR_SHAPES = {
+  "": [{ rootString: 6, frets: [0, 2, 2, 1, 0, 0], barre: 0 },
+    { rootString: 5, frets: [-1, 0, 2, 2, 2, 0], barre: 0 }],
+  m: [{ rootString: 6, frets: [0, 2, 2, 0, 0, 0], barre: 0 },
+    { rootString: 5, frets: [-1, 0, 2, 2, 1, 0], barre: 0 }],
+  7: [{ rootString: 6, frets: [0, 2, 0, 1, 0, 0], barre: 0 },
+    { rootString: 5, frets: [-1, 0, 2, 0, 2, 0], barre: 0 }],
+  m7: [{ rootString: 6, frets: [0, 2, 0, 0, 0, 0], barre: 0 },
+    { rootString: 5, frets: [-1, 0, 2, 0, 1, 0], barre: 0 }],
+  maj7: [{ rootString: 6, frets: [0, -1, 1, 1, 0, -1] },
+    { rootString: 5, frets: [-1, 0, 2, 1, 2, 0], barre: 0 }],
+  sus4: [{ rootString: 6, frets: [0, 2, 2, 2, 0, 0], barre: 0 },
+    { rootString: 5, frets: [-1, 0, 2, 2, 3, 0], barre: 0 }],
+  sus2: [{ rootString: 5, frets: [-1, 0, 2, 2, 0, 0], barre: 0 }],
+  "7sus4": [{ rootString: 6, frets: [0, 2, 0, 2, 0, 0], barre: 0 },
+    { rootString: 5, frets: [-1, 0, 2, 0, 3, 0], barre: 0 }],
+  6: [{ rootString: 5, frets: [-1, 0, 2, 2, 2, 2] },
+    { rootString: 6, frets: [0, -1, 2, 1, 2, -1] }],
+  m6: [{ rootString: 6, frets: [0, -1, 2, 0, 2, -1] },
+    { rootString: 5, frets: [-1, 0, 2, 2, 1, 2] }],
+  9: [{ rootString: 6, frets: [0, 2, 0, 1, 0, 2] }],
+  m9: [{ rootString: 6, frets: [0, 2, 0, 0, 0, 2] }],
+  maj9: [{ rootString: 6, frets: [0, 2, 1, 1, 0, 2] }],
+  dim: [{ rootString: 5, frets: [-1, 0, 1, 2, 1, -1] }],
+  dim7: [{ rootString: 5, frets: [-1, 0, 1, 2, 1, 2] }],
+  m7b5: [{ rootString: 5, frets: [-1, 0, 1, 0, 1, -1] }],
+  aug: [{ rootString: 6, frets: [0, 3, 2, 1, 1, -1] }],
+  13: [{ rootString: 6, frets: [0, -1, 0, 1, 2, -1] }],
+  mmaj7: [{ rootString: 5, frets: [-1, 0, 2, 1, 1, 0] }],
+  5: [{ rootString: 6, frets: [0, 2, 2, -1, -1, -1] },
+    { rootString: 5, frets: [-1, 0, 2, 2, -1, -1] }],
+};
+/** Suffixes sans forme dédiée : forme voisine, signalée « approx. ». */
+const GUITAR_NEAREST = { add9: "", madd9: "m", 69: "6", 11: "7sus4", "7b9": "7", "7#9": "7" };
+
+const OPEN_SHAPES = {
+  C: { frets: [-1, 3, 2, 0, 1, 0] }, A: { frets: [-1, 0, 2, 2, 2, 0] },
+  G: { frets: [3, 2, 0, 0, 0, 3] }, E: { frets: [0, 2, 2, 1, 0, 0] },
+  D: { frets: [-1, -1, 0, 2, 3, 2] },
+  F: { frets: [1, 3, 3, 2, 1, 1], barre: { fret: 1, from: 0, to: 5 } },
+  Am: { frets: [-1, 0, 2, 2, 1, 0] }, Em: { frets: [0, 2, 2, 0, 0, 0] },
+  Dm: { frets: [-1, -1, 0, 2, 3, 1] },
+  A7: { frets: [-1, 0, 2, 0, 2, 0] }, B7: { frets: [-1, 2, 1, 2, 0, 2] },
+  C7: { frets: [-1, 3, 2, 3, 1, 0] }, D7: { frets: [-1, -1, 0, 2, 1, 2] },
+  E7: { frets: [0, 2, 0, 1, 0, 0] }, G7: { frets: [3, 2, 0, 0, 0, 1] },
+  Am7: { frets: [-1, 0, 2, 0, 1, 0] }, Em7: { frets: [0, 2, 0, 0, 0, 0] },
+  Dm7: { frets: [-1, -1, 0, 2, 1, 1] },
+  Cmaj7: { frets: [-1, 3, 2, 0, 0, 0] }, Amaj7: { frets: [-1, 0, 2, 1, 2, 0] },
+  Dmaj7: { frets: [-1, -1, 0, 2, 2, 2] }, Fmaj7: { frets: [-1, -1, 3, 2, 1, 0] },
+  Gmaj7: { frets: [3, 2, 0, 0, 0, 2] },
+  Dsus2: { frets: [-1, -1, 0, 2, 3, 0] }, Dsus4: { frets: [-1, -1, 0, 2, 3, 3] },
+  Asus2: { frets: [-1, 0, 2, 2, 0, 0] }, Asus4: { frets: [-1, 0, 2, 2, 3, 0] },
+  Esus4: { frets: [0, 2, 2, 2, 0, 0] },
+  "D/F#": { frets: [2, -1, 0, 2, 3, 2] }, "G/B": { frets: [-1, 2, 0, 0, 0, 3] },
+  "C/G": { frets: [3, 3, 2, 0, 1, 0] }, "Am/G": { frets: [3, 0, 2, 2, 1, 0] },
+  "C/E": { frets: [0, 3, 2, 0, 1, 0] }, "F/C": { frets: [-1, 3, 3, 2, 1, 1] },
+  "C/B": { frets: [-1, 2, 2, 0, 1, 0] }, "Em/D": { frets: [-1, -1, 0, 0, 0, 0] },
+};
+
+/** Lookup insensible à l'enharmonie : Db trouve la forme rangée sous C#. */
+function openShapeFor(label) {
+  if (OPEN_SHAPES[label]) return OPEN_SHAPES[label];
+  for (const flats of [true, false]) {
+    const alt = respell(label, flats);
+    if (OPEN_SHAPES[alt]) return OPEN_SHAPES[alt];
+  }
+  return null;
+}
+
+/** Les 1 à 3 positions affichables d'un accord, triées du bas du manche
+ *  vers le haut : { frets (absolus), barre?, approx, bassMissing }. */
+function guitarPositions(parsed) {
+  const out = [];
+  const seen = new Set();
+  const push = (frets, barre, approx, bassMissing) => {
+    const key = frets.join(",");
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ frets, barre: barre || null, approx: !!approx, bassMissing: !!bassMissing });
+  };
+
+  const plainLabel = parsed.root + parsed.suffix;
+  let suffix = parsed.suffix;
+  let approxShape = !parsed.exact;
+  if (!GUITAR_SHAPES[suffix]) {
+    suffix = GUITAR_NEAREST[suffix] !== undefined ? GUITAR_NEAREST[suffix] : "";
+    approxShape = true;
+  }
+
+  // 1. Basse slash : uniquement les doigtés ouverts connus — on n'invente pas.
+  const slash = parsed.bass ? openShapeFor(parsed.label) : null;
+  if (slash) push(slash.frets, slash.barre, !parsed.exact, false);
+  // 2. Forme ouverte de l'accord (sans la basse le cas échéant).
+  const open = openShapeFor(plainLabel);
+  if (open) push(open.frets, open.barre, !parsed.exact, !!parsed.bass && !slash);
+  // 3. Formes mobiles, décalées selon la fondamentale.
+  for (const shape of GUITAR_SHAPES[suffix] || []) {
+    const openSemi = shape.rootString === 6 ? 4 : 9; // Mi grave / La à vide
+    const base = (((parsed.rootSemi - openSemi) % 12) + 12) % 12;
+    const frets = shape.frets.map((f) => (f < 0 ? -1 : f + base));
+    let barre = null;
+    if (base > 0 && shape.barre === 0) {
+      let from = -1, to = -1;
+      shape.frets.forEach((f, i) => { if (f === 0) { if (from < 0) from = i; to = i; } });
+      if (from >= 0) barre = { fret: base, from, to };
+    }
+    push(frets, barre, approxShape, !!parsed.bass && !slash);
+  }
+
+  out.sort((a, b) => {
+    const lo = (p) => Math.min(...p.frets.filter((f) => f > 0), 99);
+    return lo(a) - lo(b);
+  });
+  return out.slice(0, 3);
+}
+
+/** La chanson comme suite d'occurrences d'accords, chacune avec sa ligne de
+ *  parole et le fragment chanté dessus. eventAt : "bloc:cellule" → index. */
+function chordEvents(blocks) {
+  const events = [];
+  const eventAt = new Map();
+  let section = "";
+  blocks.forEach((b, bi) => {
+    if (b.type === "section") { section = b.label; return; }
+    if (b.type !== "row") return;
+    const line = b.cells.map((c) => c.lyrics).join("");
+    const hasLyrics = /\S/.test(line);
+    let at = 0;
+    b.cells.forEach((c, ci) => {
+      const parsed = parseChordSymbol(c.chord);
+      if (parsed) {
+        eventAt.set(bi + ":" + ci, events.length);
+        events.push({
+          chord: c.chord, parsed, section, blockIndex: bi, cellIndex: ci,
+          line: hasLyrics ? line : "", segStart: at, segEnd: at + c.lyrics.length,
+        });
+      }
+      at += c.lyrics.length;
+    });
+  });
+  return { events, eventAt };
 }
 
 const KEY = "carnet:v4";
@@ -528,7 +743,7 @@ const CSS = `
 .row { display:flex; flex-wrap:wrap; align-items:flex-end; margin-bottom:2px; }
 .row, .plain { transition:filter .4s, opacity .4s; }
 .masked { filter:blur(8px); opacity:.35; user-select:none; pointer-events:none; }
-.revbar { position:absolute; left:0; right:0; bottom:0; padding:10px 16px 14px; display:flex; flex-direction:column; gap:9px;
+.revbar { position:absolute; left:0; right:0; bottom:0; z-index:4; padding:10px 16px 14px; display:flex; flex-direction:column; gap:9px;
   background:linear-gradient(to top, var(--bg) 72%, transparent); }
 .revbar .inner { max-width:760px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:9px; }
 .revprog { display:flex; align-items:center; gap:10px; font-family:'JetBrains Mono'; font-size:10px;
@@ -540,6 +755,8 @@ const CSS = `
 .revmain { flex:1; padding:14px 16px; font-size:17px; }
 .seg { display:inline-flex; flex-direction:column; }
 .ch { font-family:'JetBrains Mono'; font-weight:700; color:var(--amber); font-size:.74em; line-height:1.5; white-space:pre; padding-right:8px; }
+.ch.tappable { cursor:pointer; border-radius:4px; padding:6px 8px 2px 2px; margin:-6px -8px -2px -2px; }
+.ch.tappable:active { background:rgba(233,180,76,.16); }
 .ly { white-space:pre-wrap; line-height:1.42; }
 .plain { line-height:1.55; margin-bottom:2px; white-space:pre-wrap; }
 .gap { height:14px; }
@@ -563,7 +780,41 @@ const CSS = `
 .warnbar { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--hot);
   border:1px solid rgba(200,80,60,.4); border-radius:8px; padding:8px 10px; margin-bottom:14px; }
 .engine { font-family:'JetBrains Mono'; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
-@media (min-width:720px) { .sheet { padding:26px 32px 130px; } .lib { padding:18px 32px 32px; } }
+.flow { position:absolute; inset:0; z-index:6; background:var(--bg); display:flex; flex-direction:column; }
+.flowtop { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line);
+  background:var(--panel); flex:0 0 auto; }
+.flowprog { flex:1; display:flex; align-items:center; gap:10px; min-width:0;
+  font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; color:var(--muted); white-space:nowrap; }
+.flowprog b { color:var(--amber); }
+.flowtrack { flex:1; display:flex; overflow-x:auto; overflow-y:hidden; scroll-snap-type:x mandatory;
+  overscroll-behavior-x:contain; scrollbar-width:none; }
+.flowtrack::-webkit-scrollbar { display:none; }
+.slide { flex:0 0 100%; width:100%; scroll-snap-align:start; scroll-snap-stop:always;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:clamp(8px, 2.2vh, 18px); padding:8px 20px 16px; text-align:center; }
+.flowsec { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.2em; text-transform:uppercase;
+  color:var(--amber); min-height:13px; }
+.flowlyric { font-size:17px; line-height:1.5; color:var(--muted); max-width:600px; min-height:2.9em;
+  display:flex; align-items:center; justify-content:center; white-space:pre-wrap; }
+.flowlyric .hl { color:var(--ink); background:rgba(233,180,76,.16); box-shadow:inset 0 -2px var(--amber);
+  border-radius:3px; padding:0 3px; font-weight:600; font-style:normal; }
+.flowinstru { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; text-transform:uppercase; }
+.flowchord { font-family:'Barlow Condensed'; font-weight:700; line-height:1;
+  font-size:clamp(56px, 15vw, 104px); color:var(--amber); letter-spacing:.02em; }
+.flowdiag svg { width:min(78vw, 330px); height:auto; display:block; }
+.flowmeta { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--muted); min-height:13px; }
+.flowbottom { flex:0 0 auto; display:flex; align-items:center; gap:10px;
+  padding:10px 14px calc(14px + env(safe-area-inset-bottom)); }
+.flowchip { border:1px solid var(--line); border-radius:8px; padding:9px 13px; font-family:'JetBrains Mono';
+  font-size:12px; color:var(--muted); min-width:72px; background:var(--panel2); white-space:nowrap; }
+.flowchip:disabled { opacity:.35; cursor:default; }
+.flowchip:hover:not(:disabled) { color:var(--amber); border-color:var(--amber-dim); }
+.flowhint { display:none; }
+@media (min-width:720px) { .sheet { padding:26px 32px 130px; } .lib { padding:18px 32px 32px; }
+  .flowdiag svg { width:min(44vh, 380px); }
+  .flowhint { display:block; text-align:center; font-family:'JetBrains Mono'; font-size:9.5px;
+    letter-spacing:.14em; text-transform:uppercase; color:var(--muted); padding:0 0 10px; } }
 @media (prefers-reduced-motion:reduce) { .cb * { transition:none !important; } }
 `;
 
@@ -574,10 +825,262 @@ function VU() {
   return <div className="vu" aria-hidden="true">{h.map((v, i) => <i key={i} className={i < 5 ? "on" : ""} style={{ height: v }} />)}</div>;
 }
 
+/* ------------------------------------------------------------------ */
+/* Diagrammes d'accords : SVG dessinés en code, couleurs du thème.     */
+/* ------------------------------------------------------------------ */
+
+const WHITE_PITCH = [0, 2, 4, 5, 7, 9, 11];
+const BLACK_LEFT = { 1: 0, 3: 1, 6: 3, 8: 4, 10: 5 }; // pitch → blanche à sa gauche
+
+/** Clavier de 2 octaves ; touches de l'accord marquées d'une pastille :
+ *  pleine = fondamentale, cerclée = autres notes, rouge = basse slash. */
+function PianoDiagram({ parsed }) {
+  const W = 26, H = 86, BW = 15, BH = 54;
+  const whites = [], blacks = [];
+  for (let o = 0; o < 2; o++) {
+    WHITE_PITCH.forEach((p, i) => whites.push({ semi: o * 12 + p, x: (o * 7 + i) * W }));
+    Object.entries(BLACK_LEFT).forEach(([p, left]) =>
+      blacks.push({ semi: o * 12 + Number(p), x: (o * 7 + Number(left) + 1) * W - BW / 2 }));
+  }
+  const notes = new Set(parsed.intervals.map((iv) => {
+    let n = parsed.rootSemi + iv;
+    while (n > 23) n -= 12;
+    return n;
+  }));
+  const dot = (k, black) => {
+    const isRoot = k.semi === parsed.rootSemi;
+    const isBass = parsed.bassSemi != null && k.semi === parsed.bassSemi && !notes.has(k.semi);
+    if (!notes.has(k.semi) && !isBass) return null;
+    const cx = k.x + (black ? BW / 2 : W / 2);
+    const cy = black ? BH - 10 : H - 12;
+    return <circle key={"d" + k.semi} cx={cx} cy={cy} r={5.5}
+      fill={isBass ? "var(--hot)" : isRoot ? "var(--amber)" : black ? "#15161A" : "#F2EFE8"}
+      stroke={isBass ? "var(--hot)" : "var(--amber)"} strokeWidth={2} />;
+  };
+  return (
+    <svg viewBox={`-1 -1 ${14 * W + 2} ${H + 2}`} role="img" aria-label={"Accord " + parsed.label + " au piano"}>
+      {whites.map((k) => (
+        <rect key={k.semi} x={k.x} y={0} width={W} height={H} rx={2}
+          fill="#F2EFE8" stroke="#3A3E48" strokeWidth={1} />
+      ))}
+      {whites.map((k) => dot(k, false))}
+      {blacks.map((k) => (
+        <rect key={k.semi} x={k.x} y={0} width={BW} height={BH} rx={2}
+          fill="#15161A" stroke="#3A3E48" strokeWidth={1} />
+      ))}
+      {blacks.map((k) => dot(k, true))}
+    </svg>
+  );
+}
+
+/** Grille de manche : cordes verticales (Mi grave à gauche), pastilles,
+ *  barré, cordes à vide (o) et étouffées (×), numéro de case si déplacé. */
+function GuitarDiagram({ pos, label }) {
+  const { frets, barre } = pos;
+  const fretted = frets.filter((f) => f > 0);
+  const maxF = fretted.length ? Math.max(...fretted) : 1;
+  const minF = fretted.length ? Math.min(...fretted) : 1;
+  const start = maxF <= 4 ? 1 : minF;
+  const rows = Math.max(4, maxF - start + 1);
+  const SX = 30, SY = 32, X0 = 34, Y0 = 30;
+  const width = X0 * 2 + SX * 5, height = Y0 + SY * rows + 10;
+  const sx = (i) => X0 + i * SX;
+  const fy = (f) => Y0 + (f - start + 0.5) * SY;
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={"Accord " + label + " à la guitare"}>
+      {start === 1
+        ? <rect x={sx(0) - 1.5} y={Y0 - 5} width={SX * 5 + 3} height={5} rx={1.5} fill="var(--ink)" />
+        : <text x={X0 - 14} y={Y0 + SY * 0.5 + 4} textAnchor="end" fontSize="13"
+            fontFamily="'JetBrains Mono', monospace" fill="var(--muted)">{start}fr</text>}
+      {Array.from({ length: rows + 1 }, (_, r) => (
+        <line key={"f" + r} x1={sx(0)} y1={Y0 + r * SY} x2={sx(5)} y2={Y0 + r * SY}
+          stroke="var(--line)" strokeWidth={r === 0 && start === 1 ? 0 : 1.5} />
+      ))}
+      {frets.map((_, i) => (
+        <line key={"s" + i} x1={sx(i)} y1={Y0} x2={sx(i)} y2={Y0 + rows * SY}
+          stroke="#4A4F5A" strokeWidth={1.5} />
+      ))}
+      {barre && (
+        <rect x={sx(barre.from) - 9} y={fy(barre.fret) - 9} width={sx(barre.to) - sx(barre.from) + 18}
+          height={18} rx={9} fill="var(--amber)" opacity={0.9} />
+      )}
+      {frets.map((f, i) => {
+        if (f > 0 && (!barre || f !== barre.fret || i < barre.from || i > barre.to)) {
+          return <circle key={"n" + i} cx={sx(i)} cy={fy(f)} r={9} fill="var(--amber)" />;
+        }
+        if (f === 0) {
+          return <circle key={"n" + i} cx={sx(i)} cy={Y0 - 14} r={4.5}
+            fill="none" stroke="var(--muted)" strokeWidth={1.6} />;
+        }
+        if (f === -1) {
+          return <text key={"n" + i} x={sx(i)} y={Y0 - 9.5} textAnchor="middle" fontSize="13"
+            fontFamily="'JetBrains Mono', monospace" fill="var(--muted)">×</text>;
+        }
+        return null;
+      })}
+    </svg>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Mode visualisation : la chanson accord par accord, en plein écran.  */
+/* Carrousel scroll-snap natif : un swipe = un accord. Seules les      */
+/* slides voisines (±2) montent leur contenu — les autres restent des  */
+/* boîtes vides qui préservent la géométrie des points d'accroche.     */
+/* ------------------------------------------------------------------ */
+
+/** Étend le fragment chanté aux frontières de mots, pour ne jamais
+ *  surligner un mot coupé en deux. */
+function segmentBounds(line, s0, e0) {
+  let s = Math.max(0, Math.min(s0, line.length));
+  let e = Math.max(s, Math.min(e0, line.length));
+  while (s > 0 && !/\s/.test(line[s - 1])) s--;
+  while (e < line.length && !/\s/.test(line[e])) e++;
+  while (s < e && /\s/.test(line[s])) s++;
+  while (e > s && /\s/.test(line[e - 1])) e--;
+  return [s, e];
+}
+
+function FlowSlide({ ev, instrument, posIndex }) {
+  const positions = instrument === "guitar" ? guitarPositions(ev.parsed) : [];
+  const pos = positions[Math.min(posIndex, positions.length - 1)] || null;
+  // Les espaces de bord viennent de l'alignement des accords : on les retire
+  // en décalant d'autant le segment surligné.
+  const lead = ev.line ? /^\s*/.exec(ev.line)[0].length : 0;
+  const line = ev.line ? ev.line.trim() : "";
+  const [s0, e0] = ev.line ? segmentBounds(ev.line, ev.segStart, ev.segEnd) : [0, 0];
+  const s = Math.max(0, Math.min(s0 - lead, line.length));
+  const e = Math.max(s, Math.min(e0 - lead, line.length));
+  const meta = [chordNoteNames(ev.parsed).join(" · ")];
+  if (instrument === "guitar" && pos && pos.bassMissing) meta.push("basse : " + ev.parsed.bass);
+  if (instrument === "guitar" ? (pos && pos.approx) : !ev.parsed.exact) meta.push("approx.");
+  return (
+    <>
+      <div className="flowsec">{ev.section}</div>
+      <div className="flowlyric">
+        <span>
+          {line && s < e ? (
+            <>{line.slice(0, s)}<b className="hl">{line.slice(s, e)}</b>{line.slice(e)}</>
+          ) : line ? line : <span className="flowinstru">— instrumental —</span>}
+        </span>
+      </div>
+      <div className="flowchord">{ev.parsed.label}</div>
+      <div className="flowdiag">
+        {instrument === "guitar" && pos
+          ? <GuitarDiagram pos={pos} label={ev.parsed.label} />
+          : <PianoDiagram parsed={ev.parsed} />}
+      </div>
+      <div className="flowmeta">{meta.join("  ·  ")}</div>
+    </>
+  );
+}
+
+function ChordFlow({ events, index, setIndex, instrument, setInstrument, onClose }) {
+  const trackRef = useRef(null);
+  const indexRef = useRef(index);
+  indexRef.current = index;
+  const [posIndex, setPosIndex] = useState(0);
+  useEffect(() => { setPosIndex(0); }, [index, instrument]);
+
+  // Positionnement initial, sans animation : on arrive direct sur l'accord.
+  useLayoutEffect(() => {
+    const el = trackRef.current;
+    if (el) el.scrollLeft = indexRef.current * el.clientWidth;
+  }, []);
+
+  const go = (i) => {
+    const el = trackRef.current;
+    if (!el) return;
+    const k = Math.max(0, Math.min(events.length - 1, i));
+    if (k === indexRef.current) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollTo({ left: k * el.clientWidth, behavior: reduce ? "auto" : "smooth" });
+    setIndex(k);
+  };
+
+  // Suivi de l'index au doigt : pas de scrollend sur Safari, on arrondit.
+  const onScroll = () => {
+    const el = trackRef.current;
+    if (!el || !el.clientWidth) return;
+    const i = Math.round(el.scrollLeft / el.clientWidth);
+    if (i !== indexRef.current && i >= 0 && i < events.length) setIndex(i);
+  };
+
+  useEffect(() => {
+    const h = (e) => {
+      if (e.key === "ArrowRight") { e.preventDefault(); go(indexRef.current + 1); }
+      else if (e.key === "ArrowLeft") { e.preventDefault(); go(indexRef.current - 1); }
+      else if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  });
+
+  // Rotation / redimensionnement : scrollLeft ne suit pas la largeur.
+  useEffect(() => {
+    const onResize = () => {
+      const el = trackRef.current;
+      if (el) el.scrollTo({ left: indexRef.current * el.clientWidth, behavior: "auto" });
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const ev = events[index];
+  const positions = instrument === "guitar" && ev ? guitarPositions(ev.parsed) : [];
+  const pos = Math.min(posIndex, Math.max(0, positions.length - 1));
+  const posFretted = positions[pos] ? positions[pos].frets.filter((f) => f > 0) : [];
+  const posFret = posFretted.length ? Math.min(...posFretted) : 0;
+  const prev = events[index - 1], next = events[index + 1];
+
+  return (
+    <div className="flow" role="dialog" aria-label={ev ? "Accord " + ev.parsed.label : "Accords"}>
+      <div className="flowtop">
+        <button className="iconbtn" title="Fermer" aria-label="Fermer la visualisation" onClick={onClose}>✕</button>
+        <div className="flowprog">
+          <div className="revtrack"><div className="revfill" style={{ width: `${((index + 1) / events.length) * 100}%` }} /></div>
+          <span><b>{index + 1}</b> / {events.length}</span>
+        </div>
+        <div className="seg2">
+          <button className={instrument === "guitar" ? "on" : ""} aria-pressed={instrument === "guitar"}
+            onClick={() => setInstrument("guitar")}>Guitare</button>
+          <button className={instrument === "piano" ? "on" : ""} aria-pressed={instrument === "piano"}
+            onClick={() => setInstrument("piano")}>Piano</button>
+        </div>
+      </div>
+      <div className="flowtrack" ref={trackRef} onScroll={onScroll}>
+        {events.map((e2, k) => (
+          <div className="slide" key={k}>
+            {Math.abs(k - index) <= 2 && (
+              <FlowSlide ev={e2} instrument={instrument} posIndex={k === index ? pos : 0} />
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="flowbottom">
+        <button className="flowchip" disabled={!prev} onClick={() => go(index - 1)}
+          title="Accord précédent">{prev ? "‹ " + prev.parsed.label : "‹"}</button>
+        <div className="spacer" />
+        {instrument === "guitar" && positions.length > 1 && (
+          <div className="stepper">
+            <button onClick={() => setPosIndex(Math.max(0, pos - 1))} title="Position plus basse">◀</button>
+            <span>pos <b>{pos + 1}</b>/{positions.length} · {posFret ? posFret + "fr" : "ouvert"}</span>
+            <button onClick={() => setPosIndex(Math.min(positions.length - 1, pos + 1))} title="Position plus haute">▶</button>
+          </div>
+        )}
+        <div className="spacer" />
+        <button className="flowchip" disabled={!next} onClick={() => go(index + 1)}
+          title="Accord suivant">{next ? next.parsed.label + " ›" : "›"}</button>
+      </div>
+      <div className="flowhint">← → pour naviguer · Échap pour fermer</div>
+    </div>
+  );
+}
+
 /** maskFrom : en révision, ordinal (parmi les lignes révélables) à partir
  *  duquel le texte est flouté. Les sections et blancs restent visibles :
  *  la structure guide, le texte se mérite. */
-function Sheet({ blocks, showChords, size, maskFrom }) {
+function Sheet({ blocks, showChords, size, maskFrom, onChordTap }) {
   let ord = -1;
   return (
     <div className="sheetinner" style={{ fontSize: size }}>
@@ -596,13 +1099,28 @@ function Sheet({ blocks, showChords, size, maskFrom }) {
           return text ? <div className={"plain" + cls} data-frontier={fr} key={i}>{text}</div> : <div className="gap" key={i} />;
         }
         return (
-          <div className={"row" + cls} data-frontier={fr} key={i}>
-            {b.cells.map((c, j) => (
-              <span className="seg" key={j}>
-                <span className="ch">{c.chord}</span>
-                <span className="ly">{c.lyrics}</span>
-              </span>
-            ))}
+          <div className={"row" + cls} data-frontier={fr} data-bi={i} key={i}>
+            {b.cells.map((c, j) => {
+              // Un vrai accord ouvre la visualisation ; les jetons (N.C., x2…)
+              // restent du texte. onClick uniquement : un scroll au doigt ne
+              // produit pas de click, donc pas d'ouverture accidentelle.
+              const tappable = onChordTap && !masked && parseChordSymbol(c.chord);
+              return (
+                <span className="seg" key={j}>
+                  {tappable ? (
+                    <span className="ch tappable" role="button" tabIndex={0}
+                      title={"Voir l'accord " + c.chord}
+                      onClick={() => onChordTap(i, j)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onChordTap(i, j); }
+                      }}>{c.chord}</span>
+                  ) : (
+                    <span className="ch">{c.chord}</span>
+                  )}
+                  <span className="ly">{c.lyrics}</span>
+                </span>
+              );
+            })}
           </div>
         );
       })}
@@ -784,6 +1302,8 @@ export default function Carnet() {
   const [scrolling, setScrolling] = useState(false);
   const [speed, setSpeed] = useState(3);
   const [barOpen, setBarOpen] = useState(true);
+  const [flowIndex, setFlowIndex] = useState(null); // null = fermé, sinon index d'accord
+  const [instrument, setInstrument] = useState("guitar"); // "guitar" | "piano"
   const [reviseMode, setReviseMode] = useState(null); // null | "seq" | "random"
   const [reviseStart, setReviseStart] = useState(0);
   const [revealed, setRevealed] = useState(0);
@@ -825,6 +1345,7 @@ export default function Carnet() {
       if (carnet.speed) setSpeed(carnet.speed);
       if (carnet.sort === "title" || carnet.sort === "artist") setSort(carnet.sort);
       if (typeof carnet.barOpen === "boolean") setBarOpen(carnet.barOpen);
+      if (carnet.instrument === "piano" || carnet.instrument === "guitar") setInstrument(carnet.instrument);
       setReady(true);
       const lib = await loadChordSheetJS();
       if (!alive) return;
@@ -834,7 +1355,7 @@ export default function Carnet() {
     return () => { alive = false; };
   }, []);
 
-  useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort, barOpen }); }, [songs, showChords, size, speed, sort, barOpen, ready]);
+  useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort, barOpen, instrument }); }, [songs, showChords, size, speed, sort, barOpen, instrument, ready]);
 
   // La barre d'adresse n'est réécrite qu'une fois le partage activé
   // (ouverture d'un lien #data=… ou « Copier l'URL ») : elle reflète alors
@@ -902,6 +1423,29 @@ export default function Carnet() {
     }
     return blocksFallback(current.body, steps, flats);
   }, [current, steps, CS]);
+
+  // La chanson vue comme suite d'accords, pour le mode visualisation.
+  const { events, eventAt } = useMemo(() => chordEvents(blocks), [blocks]);
+
+  const openFlow = (i = 0) => {
+    if (!events.length) return;
+    setScrolling(false);       // le défilement auto n'a pas de sens sous l'overlay
+    setReviseMode(null);       // exclusif du mode révision, comme startRevise
+    setFlowIndex(Math.max(0, Math.min(events.length - 1, i)));
+  };
+  const closeFlow = () => {
+    const ev = events[flowIndex];
+    setFlowIndex(null);
+    // La feuille se cale sur la ligne de l'accord où l'on s'est arrêté.
+    if (ev) requestAnimationFrame(() => {
+      const el = sheetRef.current && sheetRef.current.querySelector(`[data-bi="${ev.blockIndex}"]`);
+      if (el) el.scrollIntoView({ block: "center", behavior: "auto" });
+    });
+  };
+  const onChordTap = (bi, ci) => {
+    const k = eventAt.get(bi + ":" + ci);
+    if (k != null) openFlow(k);
+  };
 
   // Révision : on compte les lignes révélables (texte/paroles+accords) ;
   // sections et blancs ne comptent pas, ils restent toujours visibles.
@@ -985,7 +1529,7 @@ export default function Carnet() {
   };
 
   const openSong = (id) => {
-    setCurrentId(id); setView("song"); setScrolling(false); setReviseMode(null); setRevealed(0);
+    setCurrentId(id); setView("song"); setScrolling(false); setReviseMode(null); setRevealed(0); setFlowIndex(null);
     requestAnimationFrame(() => sheetRef.current && (sheetRef.current.scrollTop = 0));
   };
   const startNew = () => { setCurrentId(null); setDraft({ title: "", artist: "", body: "" }); setView("edit"); };
@@ -1158,6 +1702,10 @@ export default function Carnet() {
                   <button onClick={() => shift(1)} title="Un demi-ton plus haut">+</button>
                 </div>
               )}
+              {showChords && (
+                <button className="btn slim" disabled={!events.length} onClick={() => openFlow(0)}
+                  title="Voir les accords un par un, en diagrammes guitare ou piano">▦ Diagrammes</button>
+              )}
               <div className="stepper">
                 <button onClick={() => setSize(Math.max(13, size - 1))}>A−</button>
                 <span>Taille <b>{size}</b></span>
@@ -1196,7 +1744,8 @@ export default function Carnet() {
               </div>
             )}
             <Sheet blocks={blocks} showChords={showChords} size={size}
-              maskFrom={reviseMode ? visibleLines : null} />
+              maskFrom={reviseMode ? visibleLines : null}
+              onChordTap={showChords ? onChordTap : null} />
           </div>
           {reviseMode && (
             <div className="revbar">
@@ -1225,6 +1774,11 @@ export default function Carnet() {
                 </div>
               </div>
             </div>
+          )}
+          {flowIndex != null && events.length > 0 && (
+            <ChordFlow events={events} index={Math.min(flowIndex, events.length - 1)}
+              setIndex={setFlowIndex} instrument={instrument} setInstrument={setInstrument}
+              onClose={closeFlow} />
           )}
         </>
       )}
