@@ -995,6 +995,7 @@ const CSS = `
 .revtrack { flex:1; height:3px; background:var(--line); border-radius:2px; overflow:hidden; }
 .revfill { height:100%; background:var(--amber); transition:width .3s; }
 .revrow { display:flex; gap:8px; align-items:stretch; }
+.revrow .iconbtn { width:44px; height:auto; flex:0 0 auto; }
 .revmain { flex:1; padding:14px 16px; font-size:17px; }
 .seg { display:inline-flex; flex-direction:column; }
 .ch { font-family:'JetBrains Mono'; font-weight:700; color:var(--amber); font-size:.74em; line-height:1.5; white-space:pre; padding-right:8px; }
@@ -2424,9 +2425,9 @@ export default function Carnet() {
                   <span><b>{visibleLines}</b> / {revealables}</span>
                 </div>
                 <div className="revrow">
-                  <button className="iconbtn" style={{ width: 48, height: "auto" }} title="Recommencer depuis le début"
+                  <button className="iconbtn" title="Recommencer depuis le début"
                     onClick={() => startRevise("seq")}>↺</button>
-                  <button className="iconbtn" style={{ width: 48, height: "auto" }} title="Nouveau départ aléatoire"
+                  <button className="iconbtn" title="Nouveau départ aléatoire dans la chanson"
                     onClick={() => startRevise("random")}>🎲</button>
                   {reviseDone ? (
                     <button className="btn revmain" onClick={() => startRevise(reviseMode)}>
@@ -2437,7 +2438,11 @@ export default function Carnet() {
                       Ligne suivante
                     </button>
                   )}
-                  <button className="iconbtn" style={{ width: 48, height: "auto" }} title="Quitter la révision"
+                  {songs.length > 1 && (
+                    <button className="iconbtn" title="Réviser une autre chanson — tirée parmi les moins connues"
+                      onClick={openReviseRandom}>⏭</button>
+                  )}
+                  <button className="iconbtn" title="Quitter la révision"
                     onClick={() => setReviseMode(null)}>✕</button>
                 </div>
               </div>
