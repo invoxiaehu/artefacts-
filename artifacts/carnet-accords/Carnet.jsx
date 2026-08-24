@@ -1949,15 +1949,20 @@ export default function Carnet() {
     const textOf = (b) => b.type === "row" ? b.cells.map((c) => c.lyrics).join("")
       : b.type === "text" ? b.text : "";
     // Notation, pas parole — où qu'elle soit dans la chanson :
-    // tablature (une barre | avec des tirets, ou une ligne de traits),
-    // comptage de temps (chiffres, +, &, e, a, x… avec au moins un chiffre :
-    // « 1 + 2 + 3 », « 1 e & a 2 », « x2 »), et consigne de jeu SANS accords
+    // tablature (une barre | avec des tirets), ligne commençant par une
+    // barre (grille de mesures « | Am | % | », légende « | h  Hammer-on »),
+    // ligne sans la moindre lettre (séparateurs « **** », traits, comptages
+    // purs), comptage de temps avec lettres résiduelles (« x2 »,
+    // « 1 e & a 2 » — au moins un chiffre), et consigne de jeu SANS accords
     // (finissant par « : » ou tenant entière entre parenthèses) — la
     // condition d'accords évite d'exclure une parole chantée en « … : ».
+    // Une vraie parole contient des lettres et ne commence jamais par « | ».
     const notation = (b) => {
       const s = textOf(b).trim();
       if (!s) return false;
-      if ((s.includes("|") && /-{2,}/.test(s)) || /^[-=~\s]{4,}$/.test(s)) return true;
+      if (s.includes("|") && /-{2,}/.test(s)) return true;
+      if (/^\|/.test(s)) return true;
+      if (!/[a-zà-öø-ÿ]/i.test(s)) return true;
       if (/^(?=.*\d)[\d\s+&.,·|()xea-]+$/i.test(s)) return true;
       if (chordless(b) && (/:$/.test(s) || /^\(.*\)$/.test(s))) return true;
       return false;

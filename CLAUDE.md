@@ -129,9 +129,11 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   (métadonnées de PDF : titre, crédits, accordage) n'est ni masqué ni
   compté — attention, les deux parseurs rendent le texte pur en `row` à
   accords vides, pas en `text`. Partout dans la chanson, la **notation**
-  n'est ni masquée ni comptée : tablature (`|` + tirets), comptage de temps
-  (« 1 + 2 + 3 », « x2 » — au moins un chiffre), consigne de jeu sans
-  accords finissant par « : » ou entre parenthèses.
+  n'est ni masquée ni comptée : tablature (`|` + tirets), ligne commençant
+  par `|` (grille de mesures, légende de tab), ligne sans aucune lettre
+  (séparateurs `****`, comptages), comptage de temps (« x2 », « 1 e & a » —
+  au moins un chiffre), consigne de jeu sans accords finissant par « : »
+  ou entre parenthèses.
 - Scoring automatique : la révision est « pipelinée » — un bouton « Révéler »
   pour la première unité, puis chaque ✓ Savais / ✗ Savais pas juge la
   dernière unité révélée ET révèle la suivante ; la session ne finit qu'une
