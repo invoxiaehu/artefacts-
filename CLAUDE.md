@@ -83,7 +83,9 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 
 - `carnet:v4` : `{ songs, showChords, size, speed, sort, sortDir, barOpen,
   instrument, theme, listFilter }`. Chanson : `{ id, title, artist, body,
-  steps, memo? }` (`memo` 1–5 absent si 0).
+  steps, memo?, memoAuto? }` (`memo` 0.1–5, **une décimale**, absent si 0 ;
+  `memoAuto: true` = score écrit par le scoring automatique, effacé par un
+  réglage manuel aux étoiles — qui passe par un `confirm` d'avertissement).
 - Les **ids de chansons sont régénérés à chaque import** : tags (`tags:v1`)
   et listes (`lists:v1`) sont ancrés par `songKey` (titre|artiste
   normalisés) et suivent un renommage via `moveTags`/`moveLists`.
@@ -123,8 +125,26 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   une unité révélée d'un bloc ; couplets, ponts, sans étiquette = ligne à
   ligne. L'instrumental se détecte **au contenu** (bloc sans paroles →
   jamais masqué ni compté), pas au nom de section.
+- Scoring automatique : la révision est « pipelinée » — un bouton « Révéler »
+  pour la première unité, puis chaque ✓ Savais / ✗ Savais pas juge la
+  dernière unité révélée ET révèle la suivante ; la session ne finit qu'une
+  fois la dernière unité jugée (`judged >= toJudge`, `toJudge` exclut le
+  contexte d'un départ aléatoire). Chaque réponse fait un pas d'EMA
+  (`emaStep`, α dérivé du nombre d'unités : une session complète pèse ~50 %),
+  valeur non arrondie gardée dans `memoLiveRef` pendant la session — seul
+  `song.memo` est arrondi (une décimale, jamais 0). Clavier : → savais,
+  ← savais pas, Espace/Entrée/↓ = première révélation seulement.
 - Tirages pondérés : 🎲 Jouer `2^memo` (les mieux connues), 🎓 Réviser
   `2^(5−memo)` (les moins connues, révision lancée à l'ouverture) —
   toujours sur `filtered` (recherche + tags + liste active).
-- Fin de session : popup de note, une seule apparition par session
-  (`memoPromptedRef`, réarmé par `startRevise`).
+- Mode Quiz (bouton ❓ de la liste) : tirage **uniforme** d'une chanson de
+  `filtered` (décision utilisateur — pas de pondération), puis d'une unité
+  (`reviseMode === "quiz"`, contexte visible avant l'unité tirée) ; Révéler
+  → Savais/Savais pas (même EMA) → chanson suivante, ■ Stop → score de la
+  partie. La partie (`quiz {asked, correct}`) survit aux `openSong` ; le
+  ré-armement passe par `pendingQuizRef` + nonce `quizQ` (obligatoire quand
+  le hasard retombe sur la même chanson) ; les chansons sans paroles
+  croisées en route vont dans `quizDeadRef`.
+- Fin de session : popup de **score** (informatif, ajustement possible),
+  une seule apparition par session (`memoPromptedRef`, réarmé par
+  `startRevise`), seulement si `judged > 0`, jamais en quiz.
