@@ -1946,12 +1946,28 @@ export default function Carnet() {
     const firstSection = blocks.findIndex((b) => b.type === "section");
     const chordless = (b) => b.type === "text"
       || (b.type === "row" && b.cells.every((c) => !(c.chord || "").trim()));
+    const textOf = (b) => b.type === "row" ? b.cells.map((c) => c.lyrics).join("")
+      : b.type === "text" ? b.text : "";
+    // Notation, pas parole — où qu'elle soit dans la chanson :
+    // tablature (une barre | avec des tirets, ou une ligne de traits),
+    // comptage de temps (chiffres, +, &, e, a, x… avec au moins un chiffre :
+    // « 1 + 2 + 3 », « 1 e & a 2 », « x2 »), et consigne de jeu SANS accords
+    // (finissant par « : » ou tenant entière entre parenthèses) — la
+    // condition d'accords évite d'exclure une parole chantée en « … : ».
+    const notation = (b) => {
+      const s = textOf(b).trim();
+      if (!s) return false;
+      if ((s.includes("|") && /-{2,}/.test(s)) || /^[-=~\s]{4,}$/.test(s)) return true;
+      if (/^(?=.*\d)[\d\s+&.,·|()xea-]+$/i.test(s)) return true;
+      if (chordless(b) && (/:$/.test(s) || /^\(.*\)$/.test(s))) return true;
+      return false;
+    };
     blocks.forEach((b, i) => {
       if (b.type === "section") { kind = sectionKind(b.label); chorusUnit = -1; return; }
       if (firstSection >= 0 && i < firstSection && chordless(b)) return;
       const lyrical = b.type === "row" ? b.cells.some((c) => c.lyrics.trim())
         : b.type === "text" ? !!b.text.trim() : false;
-      if (!lyrical) return;
+      if (!lyrical || notation(b)) return;
       if (kind === "chorus") {
         if (chorusUnit < 0) { chorusUnit = kinds.length; kinds.push("chorus"); }
         byBlock[i] = chorusUnit;
