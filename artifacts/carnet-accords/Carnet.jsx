@@ -915,6 +915,7 @@ const CSS = `
 .seg2 { display:flex; border:1px solid var(--line); border-radius:8px; background:var(--panel2); overflow:hidden; }
 .seg2 button { padding:8px 13px; font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
 .seg2 button.on { color:var(--amber); background:rgba(233,180,76,.12); }
+.seg2 .sortdir { font-style:normal; margin-left:5px; font-size:11px; }
 .btn.slim { padding:8px 14px; font-size:13.5px; }
 .card h3 { margin:0; font-family:'Barlow Condensed'; font-weight:600; font-size:21px; letter-spacing:.03em; text-transform:uppercase; line-height:1.05; }
 .card p { margin:2px 0 0; font-size:12.5px; color:var(--muted); }
@@ -1649,6 +1650,7 @@ export default function Carnet() {
   const [query, setQuery] = useState("");
   const [showChords, setShowChords] = useState(true);
   const [sort, setSort] = useState("title");
+  const [sortDir, setSortDir] = useState("asc"); // re-taper le tri actif inverse l'ordre
   const [size, setSize] = useState(17);
   const [scrolling, setScrolling] = useState(false);
   const [speed, setSpeed] = useState(3);
@@ -1718,6 +1720,7 @@ export default function Carnet() {
       if (carnet.size) setSize(carnet.size);
       if (carnet.speed) setSpeed(carnet.speed);
       if (carnet.sort === "title" || carnet.sort === "artist" || carnet.sort === "memo") setSort(carnet.sort);
+      if (carnet.sortDir === "desc") setSortDir("desc");
       if (typeof carnet.barOpen === "boolean") setBarOpen(carnet.barOpen);
       if (carnet.theme === "light") setTheme("light");
       if (typeof carnet.listFilter === "string") setListFilter(carnet.listFilter);
@@ -1731,7 +1734,7 @@ export default function Carnet() {
     return () => { alive = false; };
   }, []);
 
-  useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort, barOpen, instrument, theme, listFilter }); }, [songs, showChords, size, speed, sort, barOpen, instrument, theme, listFilter, ready]);
+  useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort, sortDir, barOpen, instrument, theme, listFilter }); }, [songs, showChords, size, speed, sort, sortDir, barOpen, instrument, theme, listFilter, ready]);
   useEffect(() => { if (ready) saveTags(tags); }, [tags, ready]);
   useEffect(() => { if (ready) saveLists(lists); }, [lists, ready]);
 
@@ -1916,15 +1919,17 @@ export default function Carnet() {
         return tagFilter.every((id) => ids.includes(id));
       });
     }
-    // Tri par note : les moins connues d'abord — l'ordre de travail.
+    // Tri par note, ascendant par défaut : les moins connues d'abord — l'ordre
+    // de travail. Re-taper le tri actif inverse l'ordre (dir).
+    const dir = sortDir === "desc" ? -1 : 1;
     if (sort === "memo") {
       return [...list].sort((a, b) =>
-        ((a.memo || 0) - (b.memo || 0)) || a.title.localeCompare(b.title, "fr"));
+        dir * (((a.memo || 0) - (b.memo || 0)) || a.title.localeCompare(b.title, "fr")));
     }
     const key = sort === "artist" ? (s) => (s.artist || "").trim() : (s) => s.title;
     return [...list].sort((a, b) =>
-      key(a).localeCompare(key(b), "fr") || a.title.localeCompare(b.title, "fr"));
-  }, [songs, query, sort, tagFilter, tags, activeList, lists]);
+      dir * (key(a).localeCompare(key(b), "fr") || a.title.localeCompare(b.title, "fr")));
+  }, [songs, query, sort, sortDir, tagFilter, tags, activeList, lists]);
 
   const importPdfs = async (files) => {
     if (!files || !files.length) return;
@@ -2216,13 +2221,18 @@ export default function Carnet() {
               <div className="toolrow">
                 <span className="lab">Tri</span>
                 <div className="seg2">
-                  <button className={sort === "title" ? "on" : ""} aria-pressed={sort === "title"}
-                    onClick={() => setSort("title")}>Titre</button>
-                  <button className={sort === "artist" ? "on" : ""} aria-pressed={sort === "artist"}
-                    onClick={() => setSort("artist")}>Artiste</button>
-                  <button className={sort === "memo" ? "on" : ""} aria-pressed={sort === "memo"}
-                    title="Note d'apprentissage — les moins connues d'abord"
-                    onClick={() => setSort("memo")}>Note</button>
+                  {[["title", "Titre"], ["artist", "Artiste"], ["memo", "Note"]].map(([k, lab]) => (
+                    <button key={k} className={sort === k ? "on" : ""} aria-pressed={sort === k}
+                      title={sort === k
+                        ? (sortDir === "asc" ? "Inverser : ordre descendant" : "Inverser : ordre ascendant")
+                        : k === "memo" ? "Trier par note d'apprentissage — les moins connues d'abord" : undefined}
+                      onClick={() => {
+                        if (sort === k) setSortDir(sortDir === "asc" ? "desc" : "asc");
+                        else { setSort(k); setSortDir("asc"); }
+                      }}>
+                      {lab}{sort === k && <i className="sortdir">{sortDir === "asc" ? "↑" : "↓"}</i>}
+                    </button>
+                  ))}
                 </div>
                 <div className="spacer" />
                 <button className="btn slim" onClick={openRandom}
