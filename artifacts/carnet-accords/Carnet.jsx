@@ -851,6 +851,9 @@ const CSS = `
 .cb, .cb * { box-sizing:border-box; }
 .cb { --bg:#111216; --panel:#181A1F; --panel2:#20232A; --line:#2E323B;
   --ink:#ECE9E3; --muted:#878C97; --amber:#E9B44C; --amber-dim:#8A6B2A; --hot:#C8503C;
+  /* Voiles translucides de l'accent — fonds actifs, survols, surlignage.
+     En variables pour que le mode clair les recolore avec son propre accent. */
+  --acc-soft:rgba(233,180,76,.12); --acc-faint:rgba(233,180,76,.07); --acc-glow:rgba(233,180,76,.16);
   /* Zones réservées par le système — barre d'état, indicateur d'accueil, encoche en
      paysage. Nulles partout ailleurs, donc sans effet sur un écran ordinaire. En
      variables plutôt qu'en env() dispersés : c'est ce qui rend la mise en page
@@ -860,12 +863,13 @@ const CSS = `
   position:absolute; inset:0; display:flex; flex-direction:column; background:var(--bg); color:var(--ink);
   padding-left:var(--sal); padding-right:var(--sar);
   font-family:'Archivo', ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing:antialiased; overflow:hidden; }
-/* Mode clair : la même encre, un papier chaud. L'ambre fonce pour rester
-   lisible en texte (accords, compteurs) sur fond clair. */
-.cb.light { --bg:#F2EFE7; --panel:#FBFAF6; --panel2:#EAE6DB; --line:#D5D0C2;
-  --ink:#23242A; --muted:#6F747E; --amber:#9C6B10; --amber-dim:#C4A163; --hot:#B3402C; }
+/* Mode clair : un beau gris très pâle, la même encre, et le cobalt en accent
+   — vif et lisible en plein jour, sans rien de brun. */
+.cb.light { --bg:#F5F6F9; --panel:#FFFFFF; --panel2:#ECEEF4; --line:#D6DAE3;
+  --ink:#1D1F26; --muted:#6B7280; --amber:#2E5BD7; --amber-dim:#93A8E8; --hot:#C23A2B;
+  --acc-soft:rgba(46,91,215,.10); --acc-faint:rgba(46,91,215,.06); --acc-glow:rgba(46,91,215,.14); }
 .cb.light .btn.primary { color:#FFF; }
-.cb.light .speedfly { background:rgba(251,250,246,.94); box-shadow:0 4px 16px rgba(0,0,0,.18); }
+.cb.light .speedfly { background:rgba(255,255,255,.94); box-shadow:0 4px 16px rgba(0,0,0,.18); }
 .cb.light .modal { background:rgba(0,0,0,.35); }
 .cb button { font:inherit; color:inherit; background:none; border:none; cursor:pointer; }
 /* Champs de fichier pilotés par un bouton : rendus mais invisibles. Un input en
@@ -885,7 +889,7 @@ const CSS = `
   color:var(--muted); background:var(--panel2); font-size:16px; }
 .iconbtn:hover { color:var(--ink); border-color:var(--amber-dim); }
 /* Bouton-état de la barre du haut : révision en cours, accords affichés, défilement. */
-.iconbtn.on { color:var(--amber); border-color:var(--amber-dim); background:rgba(233,180,76,.14); }
+.iconbtn.on { color:var(--amber); border-color:var(--amber-dim); background:var(--acc-soft); }
 .iconbtn:disabled { opacity:.4; cursor:default; }
 @media (max-width:374px) { .top { gap:8px; } }
 /* Un point ambre : le carnet a changé depuis la dernière sauvegarde en fichier. */
@@ -897,11 +901,11 @@ const CSS = `
   color:var(--ink); font-size:15px; margin-bottom:12px; }
 .search::placeholder { color:var(--muted); }
 .count { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase; margin:0 0 10px; }
-.notice { position:relative; border:1px solid var(--amber-dim); background:rgba(233,180,76,.07); border-radius:10px;
+.notice { position:relative; border:1px solid var(--amber-dim); background:var(--acc-faint); border-radius:10px;
   padding:11px 40px 11px 13px; font-size:13px; line-height:1.5; margin-bottom:12px; }
 .noticeclose { position:absolute; top:7px; right:7px; width:26px; height:26px; border-radius:7px; display:grid;
   place-items:center; color:var(--muted); font-size:13px; line-height:1; }
-.noticeclose:hover { color:var(--ink); background:rgba(233,180,76,.12); }
+.noticeclose:hover { color:var(--ink); background:var(--acc-soft); }
 .card { width:100%; display:flex; align-items:stretch; border:1px solid var(--line);
   border-left:3px solid var(--line); border-radius:10px; background:var(--panel); margin-bottom:8px;
   transition:border-color .15s; overflow:hidden; }
@@ -914,7 +918,7 @@ const CSS = `
 .toolrow .lab { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); }
 .seg2 { display:flex; border:1px solid var(--line); border-radius:8px; background:var(--panel2); overflow:hidden; }
 .seg2 button { padding:8px 13px; font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
-.seg2 button.on { color:var(--amber); background:rgba(233,180,76,.12); }
+.seg2 button.on { color:var(--amber); background:var(--acc-soft); }
 .seg2 .sortdir { font-style:normal; margin-left:5px; font-size:11px; }
 .btn.slim { padding:8px 14px; font-size:13.5px; }
 .card h3 { margin:0; font-family:'Barlow Condensed'; font-weight:600; font-size:21px; letter-spacing:.03em; text-transform:uppercase; line-height:1.05; }
@@ -930,7 +934,7 @@ const CSS = `
 .tagchip:hover { border-color:var(--amber-dim); }
 /* Les tags actifs portent leur couleur en style inline ; les chips sans
    couleur propre (listes) prennent l'ambre par défaut. */
-.tagchip.on { color:var(--amber); border-color:var(--amber-dim); background:rgba(233,180,76,.12); }
+.tagchip.on { color:var(--amber); border-color:var(--amber-dim); background:var(--acc-soft); }
 .cardmemo { font-family:'JetBrains Mono'; font-size:11px; letter-spacing:.06em; color:var(--amber); flex:0 0 auto; }
 .listsel { flex:1; min-width:0; padding:9px 11px; border-radius:8px; border:1px solid var(--line);
   background:var(--panel2); color:var(--ink); font-size:13.5px; }
@@ -972,7 +976,7 @@ const CSS = `
 .stars.big .star { font-size:32px; padding:5px 6px; }
 .stepper { display:flex; align-items:center; border:1px solid var(--line); border-radius:8px; background:var(--panel2); overflow:hidden; }
 .stepper button { width:30px; height:31px; color:var(--muted); font-size:15px; line-height:1; }
-.stepper button:hover { color:var(--amber); background:rgba(233,180,76,.07); }
+.stepper button:hover { color:var(--amber); background:var(--acc-faint); }
 .stepper span { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em; color:var(--muted); padding:0 8px;
   text-transform:uppercase; min-width:70px; text-align:center; }
 .stepper span b { color:var(--ink); font-weight:700; }
@@ -1000,7 +1004,7 @@ const CSS = `
 .seg { display:inline-flex; flex-direction:column; }
 .ch { font-family:'JetBrains Mono'; font-weight:700; color:var(--amber); font-size:.74em; line-height:1.5; white-space:pre; padding-right:8px; }
 .ch.tappable { cursor:pointer; border-radius:4px; padding:6px 8px 2px 2px; margin:-6px -8px -2px -2px; }
-.ch.tappable:active { background:rgba(233,180,76,.16); }
+.ch.tappable:active { background:var(--acc-glow); }
 .ly { white-space:pre-wrap; line-height:1.42; }
 .plain { line-height:1.55; margin-bottom:2px; white-space:pre-wrap; }
 .gap { height:14px; }
@@ -1040,7 +1044,7 @@ const CSS = `
   color:var(--amber); min-height:13px; }
 .flowlyric { font-size:17px; line-height:1.5; color:var(--muted); max-width:600px; min-height:2.9em;
   display:flex; align-items:center; justify-content:center; white-space:pre-wrap; }
-.flowlyric .hl { color:var(--ink); background:rgba(233,180,76,.16); box-shadow:inset 0 -2px var(--amber);
+.flowlyric .hl { color:var(--ink); background:var(--acc-glow); box-shadow:inset 0 -2px var(--amber);
   border-radius:3px; padding:0 3px; font-weight:600; font-style:normal; }
 .flowinstru { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; text-transform:uppercase; }
 .flowchord { font-family:'Barlow Condensed'; font-weight:700; line-height:1;
