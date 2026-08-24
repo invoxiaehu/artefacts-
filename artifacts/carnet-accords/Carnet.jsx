@@ -330,6 +330,17 @@ function blocksFallback(text, steps, flats) {
   return collapse(blocks);
 }
 
+/** Nature d'une section pour la révision, d'après son étiquette (FR/EN) :
+ *  les instrumentales n'ont rien à mémoriser, les refrains sont connus par
+ *  cœur (on les révèle d'un bloc), tout le reste — couplets, ponts, sections
+ *  sans étiquette — se travaille ligne à ligne. */
+function sectionKind(label) {
+  const t = String(label || "").toLowerCase();
+  if (/(intro|outro|solo|instrumental|interlude|coda)/.test(t)) return "instrumental";
+  if (/(refrain|chorus)/.test(t)) return "chorus"; // couvre pré-refrain / pre-chorus
+  return "verse";
+}
+
 /* ------------------------------------------------------------------ */
 /* Moteur d'accords : du symbole ("F#m7", "D/F#") aux notes et aux     */
 /* doigtés. Tout est embarqué — aucune librairie, aucun réseau.        */
@@ -1360,19 +1371,23 @@ function ChordFlow({ events, index, setIndex, instrument, setInstrument, onClose
   );
 }
 
-/** maskFrom : en révision, ordinal (parmi les lignes révélables) à partir
- *  duquel le texte est flouté. Les sections et blancs restent visibles :
- *  la structure guide, le texte se mérite. */
-function Sheet({ blocks, showChords, size, maskFrom, onChordTap }) {
-  let ord = -1;
+/** maskFrom : en révision, numéro d'unité à partir duquel le texte est
+ *  flouté ; maskUnits donne l'unité de chaque bloc (null = jamais masqué :
+ *  sections, blancs, instrumentales). La structure guide, le texte se mérite. */
+function Sheet({ blocks, showChords, size, maskFrom, maskUnits, onChordTap }) {
+  // Dernier bloc de l'unité tout juste révélée : c'est lui qu'on recentre.
+  let frontierBlock = -1;
+  if (maskFrom != null && maskUnits) {
+    for (let i = 0; i < blocks.length; i++) if (maskUnits[i] === maskFrom - 1) frontierBlock = i;
+  }
   return (
     <div className="sheetinner" style={{ fontSize: size }}>
       {blocks.map((b, i) => {
         if (b.type === "section") return <div className="sec" key={i}>{b.label}</div>;
         if (b.type === "blank") return <div className="gap" key={i} />;
-        ord++;
-        const masked = maskFrom != null && ord >= maskFrom;
-        const frontier = maskFrom != null && ord === maskFrom - 1;
+        const unit = maskUnits ? maskUnits[i] : null;
+        const masked = maskFrom != null && unit != null && unit >= maskFrom;
+        const frontier = i === frontierBlock;
         const cls = masked ? " masked" : "";
         const fr = frontier ? "1" : undefined;
         if (b.type === "text") return <div className={"plain" + cls} data-frontier={fr} key={i}>{b.text}</div>;
@@ -1868,11 +1883,31 @@ export default function Carnet() {
     if (k != null) openFlow(k);
   };
 
-  // Révision : on compte les lignes révélables (texte/paroles+accords) ;
+  // Révision par unités : les instrumentales restent en clair et ne comptent
+  // pas ; un refrain (connu par cœur) forme une seule unité révélée d'un
+  // bloc ; couplets, ponts et sections sans étiquette vont ligne à ligne.
+  // byBlock[i] = numéro d'unité du bloc i (null = jamais masqué).
   // sections et blancs ne comptent pas, ils restent toujours visibles.
-  const revealables = useMemo(
-    () => blocks.reduce((n, b) => n + (b.type === "row" || b.type === "text" ? 1 : 0), 0),
-    [blocks]);
+  const reviseUnits = useMemo(() => {
+    const byBlock = new Array(blocks.length).fill(null);
+    const kinds = [];
+    let kind = "verse";
+    let chorusUnit = -1; // unité de la section refrain en cours
+    blocks.forEach((b, i) => {
+      if (b.type === "section") { kind = sectionKind(b.label); chorusUnit = -1; return; }
+      if (b.type !== "row" && b.type !== "text") return;
+      if (kind === "instrumental") return;
+      if (kind === "chorus") {
+        if (chorusUnit < 0) { chorusUnit = kinds.length; kinds.push("chorus"); }
+        byBlock[i] = chorusUnit;
+      } else {
+        byBlock[i] = kinds.length;
+        kinds.push("verse");
+      }
+    });
+    return { byBlock, kinds };
+  }, [blocks]);
+  const revealables = reviseUnits.kinds.length;
   const visibleLines = Math.min(revealables, reviseStart + revealed);
   const reviseDone = reviseMode && visibleLines >= revealables;
 
@@ -2427,7 +2462,7 @@ export default function Carnet() {
               </div>
             )}
             <Sheet blocks={blocks} showChords={showChords} size={size}
-              maskFrom={reviseMode ? visibleLines : null}
+              maskFrom={reviseMode ? visibleLines : null} maskUnits={reviseUnits.byBlock}
               onChordTap={showChords ? onChordTap : null} />
           </div>
           {scrolling && !reviseMode && (
@@ -2458,7 +2493,7 @@ export default function Carnet() {
                     </button>
                   ) : (
                     <button className="btn primary revmain" onClick={revealNext}>
-                      Ligne suivante
+                      {reviseUnits.kinds[visibleLines] === "chorus" ? "Refrain suivant" : "Ligne suivante"}
                     </button>
                   )}
                   {songs.length > 1 && (
