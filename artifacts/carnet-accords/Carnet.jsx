@@ -700,6 +700,25 @@ const DEFAULT_TAGS = [
 ];
 const freshTags = () => ({ defs: DEFAULT_TAGS.map((t) => ({ ...t })), byKey: {} });
 
+/** Les couleurs de tags sont des pastels pensés pour le fond sombre ; en
+ *  texte sur fond clair elles se délavent. Même teinte, mais foncée et
+ *  resaturée — le fond translucide, lui, garde la couleur d'origine. */
+function tagInk(hex, light) {
+  if (!light || !/^#[0-9a-f]{6}$/i.test(hex)) return hex;
+  const n = parseInt(hex.slice(1), 16);
+  const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min, l = (max + min) / 2;
+  let h = 0;
+  if (d) {
+    if (max === r) h = ((g - b) / d + 6) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+  }
+  const s = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
+  return `hsl(${Math.round(h)} ${Math.round(Math.min(1, s * 1.3 + 0.15) * 100)}% ${Math.round(Math.min(l, 0.34) * 100)}%)`;
+}
+
 /** Valide un bloc de tags venu de l'extérieur (fichier de sauvegarde) : on
  *  n'accepte que des définitions exploitables, et jamais une affectation qui
  *  pointerait vers un tag inconnu. */
@@ -2255,7 +2274,7 @@ export default function Carnet() {
                   return (
                     <button key={t.id} className={"tagchip" + (on ? " on" : "")} aria-pressed={on}
                       title={`${t.label} — ${count} chanson${count > 1 ? "s" : ""}`}
-                      style={on ? { color: t.color, borderColor: t.color, background: t.color + "22" } : undefined}
+                      style={on ? { color: tagInk(t.color, theme === "light"), borderColor: tagInk(t.color, theme === "light"), background: t.color + "22" } : undefined}
                       onClick={() => setTagFilter((f) => (on ? f.filter((x) => x !== t.id) : [...f, t.id]))}>
                       <span>{t.icon}</span>{count > 0 && <b>{count}</b>}
                     </button>
@@ -2348,7 +2367,7 @@ export default function Carnet() {
                     const on = hasTag(current, t.id);
                     return (
                       <button key={t.id} className={"tagchip" + (on ? " on" : "")} aria-pressed={on}
-                        style={on ? { color: t.color, borderColor: t.color, background: t.color + "22" } : undefined}
+                        style={on ? { color: tagInk(t.color, theme === "light"), borderColor: tagInk(t.color, theme === "light"), background: t.color + "22" } : undefined}
                         onClick={() => toggleTag(current, t.id)}>
                         <span>{t.icon}</span><span>{t.label}</span>
                       </button>
