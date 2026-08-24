@@ -124,7 +124,11 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 - Unités typées par section : refrain/pré-refrain (`sectionKind`) =
   une unité révélée d'un bloc ; couplets, ponts, sans étiquette = ligne à
   ligne. L'instrumental se détecte **au contenu** (bloc sans paroles →
-  jamais masqué ni compté), pas au nom de section.
+  jamais masqué ni compté), pas au nom de section. Même logique pour le
+  **préambule** : avant la première section, un bloc sans le moindre accord
+  (métadonnées de PDF : titre, crédits, accordage) n'est ni masqué ni
+  compté — attention, les deux parseurs rendent le texte pur en `row` à
+  accords vides, pas en `text`.
 - Scoring automatique : la révision est « pipelinée » — un bouton « Révéler »
   pour la première unité, puis chaque ✓ Savais / ✗ Savais pas juge la
   dernière unité révélée ET révèle la suivante ; la session ne finit qu'une

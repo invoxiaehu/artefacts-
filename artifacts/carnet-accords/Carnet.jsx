@@ -1930,8 +1930,18 @@ export default function Carnet() {
     const kinds = [];
     let kind = "verse";
     let chorusUnit = -1; // unité de la section refrain en cours
+    // Préambule : avant la première section, un bloc sans le moindre accord
+    // est de la métadonnée d'import (titre, crédits, accordage), pas une
+    // parole — jamais masqué ni compté. Les lignes accordées y restent
+    // révisables (couplet non étiqueté), et sans aucune section tout reste
+    // comme avant. Les deux parseurs rendent le texte pur en « row » à
+    // accords vides, d'où le critère au contenu plutôt qu'au type.
+    const firstSection = blocks.findIndex((b) => b.type === "section");
+    const chordless = (b) => b.type === "text"
+      || (b.type === "row" && b.cells.every((c) => !(c.chord || "").trim()));
     blocks.forEach((b, i) => {
       if (b.type === "section") { kind = sectionKind(b.label); chorusUnit = -1; return; }
+      if (firstSection >= 0 && i < firstSection && chordless(b)) return;
       const lyrical = b.type === "row" ? b.cells.some((c) => c.lyrics.trim())
         : b.type === "text" ? !!b.text.trim() : false;
       if (!lyrical) return;
