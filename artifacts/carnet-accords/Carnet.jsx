@@ -608,6 +608,9 @@ function normalizeLibrary(data) {
       artist: String(s.artist || ""),
       body: s.body,
       steps: Math.max(-6, Math.min(6, Number(s.steps) || 0)),
+      // Note d'apprentissage : absente tant qu'elle vaut zéro, l'URL de
+      // partage et les sauvegardes restent aussi courtes qu'avant.
+      ...(Number(s.memo) >= 1 ? { memo: Math.min(5, Math.round(Number(s.memo))) } : {}),
     }));
   if (!songs.length) throw new Error("aucune grille exploitable");
   const lib = { songs };
@@ -778,6 +781,20 @@ const mergeByTitle = (prev, added) => {
   return [...prev.filter((s) => !added.some((a) => norm(a.title) === norm(s.title))), ...added];
 };
 
+/** Note d'apprentissage : cinq étoiles tappables ; retaper la note courante
+ *  la remet à zéro. */
+function Stars({ value, onChange, big }) {
+  return (
+    <div className={"stars" + (big ? " big" : "")} role="radiogroup" aria-label="Note d'apprentissage">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button key={n} type="button" className={"star" + (n <= value ? " on" : "")}
+          aria-label={`${n} sur 5`} aria-pressed={n <= value}
+          onClick={() => onChange(n === value ? 0 : n)}>{n <= value ? "★" : "☆"}</button>
+      ))}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 
 // Les polices sont chargées par un <link> de l'index.html, et non par un
@@ -814,6 +831,10 @@ const CSS = `
 .iconbtn { width:34px; height:34px; border-radius:8px; border:1px solid var(--line); display:grid; place-items:center;
   color:var(--muted); background:var(--panel2); font-size:16px; }
 .iconbtn:hover { color:var(--ink); border-color:var(--amber-dim); }
+/* Bouton-état de la barre du haut : révision en cours, accords affichés, défilement. */
+.iconbtn.on { color:var(--amber); border-color:var(--amber-dim); background:rgba(233,180,76,.14); }
+.iconbtn:disabled { opacity:.4; cursor:default; }
+@media (max-width:374px) { .top { gap:8px; } }
 /* Un point ambre : le carnet a changé depuis la dernière sauvegarde en fichier. */
 .iconbtn.nudge { position:relative; }
 .iconbtn.nudge::after { content:''; position:absolute; top:4px; right:4px; width:6px; height:6px;
@@ -872,17 +893,23 @@ const CSS = `
 .foldbtn:hover { color:var(--amber); border-color:var(--amber-dim); }
 .foldbtn i { display:block; font-style:normal; transition:transform .25s; }
 .foldbtn.folded i { transform:rotate(180deg); }
-.barwrap { overflow:hidden; max-height:280px; opacity:1; transition:max-height .28s ease, opacity .22s; }
-.barwrap.folded { max-height:0; opacity:0; }
+/* Repli du menu par grille 0fr/1fr : la hauteur du contenu ne compte plus,
+   contrairement à un max-height figé qui rognerait un menu qui grandit. */
+.barwrap { display:grid; grid-template-rows:1fr; opacity:1; transition:grid-template-rows .28s ease, opacity .22s; }
+.barwrap.folded { grid-template-rows:0fr; opacity:0; }
+.barwrap > * { overflow:hidden; min-height:0; }
 .artist { font-size:12.5px; color:var(--muted); margin:3px 0 0; letter-spacing:.04em; }
-.bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:12px; }
-.switch { display:flex; align-items:center; gap:9px; padding:5px 11px 5px 7px; border-radius:8px; border:1px solid var(--line); background:var(--panel2); }
-.track { width:38px; height:21px; border-radius:11px; background:#0D0E11; border:1px solid var(--line); position:relative; transition:background .18s; }
-.knob { position:absolute; top:2px; left:2px; width:15px; height:15px; border-radius:50%; background:var(--muted); transition:transform .18s, background .18s; }
-.switch.on .track { background:rgba(233,180,76,.18); border-color:var(--amber-dim); }
-.switch.on .knob { transform:translateX(17px); background:var(--amber); }
-.switch label { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); cursor:pointer; }
-.switch.on label { color:var(--amber); }
+/* Menu de la chanson : des rangées label à gauche / contrôle à droite,
+   toutes alignées sur la même grille — pas de flex-wrap qui zigzague. */
+.menu { display:flex; flex-direction:column; gap:9px; margin-top:12px; }
+.mrow { display:grid; grid-template-columns:1fr auto; align-items:center; gap:10px; }
+.mlab { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); }
+.mact { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:3px; }
+/* Étoiles de mémorisation. */
+.stars { display:flex; gap:2px; }
+.star { font-size:21px; line-height:1; padding:3px 4px; color:var(--line); }
+.star.on { color:var(--amber); }
+.stars.big .star { font-size:32px; padding:5px 6px; }
 .stepper { display:flex; align-items:center; border:1px solid var(--line); border-radius:8px; background:var(--panel2); overflow:hidden; }
 .stepper button { width:30px; height:31px; color:var(--muted); font-size:15px; line-height:1; }
 .stepper button:hover { color:var(--amber); background:rgba(233,180,76,.07); }
@@ -967,6 +994,21 @@ const CSS = `
 .flowchip:disabled { opacity:.35; cursor:default; }
 .flowchip:hover:not(:disabled) { color:var(--amber); border-color:var(--amber-dim); }
 .flowhint { display:none; }
+/* Vitesse : n'existe que pendant le défilement, flotte au-dessus de la feuille. */
+.speedfly { position:absolute; right:12px; bottom:calc(14px + var(--sab)); z-index:4;
+  border:1px solid var(--line); border-radius:10px; background:rgba(24,26,31,.94);
+  box-shadow:0 4px 16px rgba(0,0,0,.45); }
+.speedfly .stepper { border:none; background:none; }
+/* Popup de fin de révision — au-dessus de la revbar (z-index 4). */
+.modal { position:absolute; inset:0; z-index:8; display:flex; align-items:center; justify-content:center;
+  padding:20px; background:rgba(0,0,0,.55); }
+.modalbox { width:100%; max-width:340px; background:var(--panel); border:1px solid var(--line);
+  border-radius:14px; padding:24px 20px 20px; text-align:center;
+  display:flex; flex-direction:column; align-items:center; gap:12px; }
+.modalicon { font-size:34px; line-height:1; }
+.modalbox h2 { font-family:'Barlow Condensed'; text-transform:uppercase; letter-spacing:.08em;
+  font-size:22px; margin:0; color:var(--amber); }
+.modalbox p { margin:0; font-size:13.5px; color:var(--muted); line-height:1.5; }
 @media (min-width:720px) { .sheet { padding:26px 32px calc(130px + var(--sab)); }
   .lib { padding:18px 32px calc(32px + var(--sab)); }
   .flowdiag svg { width:min(44vh, 380px); }
@@ -1555,6 +1597,9 @@ export default function Carnet() {
   const [reviseMode, setReviseMode] = useState(null); // null | "seq" | "random"
   const [reviseStart, setReviseStart] = useState(0);
   const [revealed, setRevealed] = useState(0);
+  const [memoPrompt, setMemoPrompt] = useState(false); // popup de note en fin de révision
+  const [memoDraft, setMemoDraft] = useState(0);
+  const memoPromptedRef = useRef(false); // une seule apparition par session de révision
   const draggingRef = useRef(false);
   const resumeRef = useRef(null);
   const [status, setStatus] = useState("");
@@ -1740,6 +1785,8 @@ export default function Carnet() {
     setReviseMode(mode);
     setReviseStart(mode === "random" ? 1 + Math.floor(Math.random() * Math.max(1, revealables - 1)) : 0);
     setRevealed(0);
+    memoPromptedRef.current = false;
+    setMemoPrompt(false);
   };
   const revealNext = () => {
     setRevealed((r) => Math.min(r + 1, Math.max(0, revealables - reviseStart)));
@@ -1753,6 +1800,16 @@ export default function Carnet() {
     if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
     else sheetRef.current.scrollTop = 0;
   }, [reviseMode, reviseStart, revealed]);
+
+  // Fin de session : le popup de note apparaît une seule fois (le drapeau
+  // n'est réarmé que par startRevise), jamais en re-révélant après coup.
+  useEffect(() => {
+    if (reviseDone && !memoPromptedRef.current) {
+      memoPromptedRef.current = true;
+      setMemoDraft((current && current.memo) || 0);
+      setMemoPrompt(true);
+    }
+  }, [reviseDone]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Au clavier : Espace, Entrée ou ↓ révèlent la ligne suivante.
   useEffect(() => {
@@ -1815,7 +1872,7 @@ export default function Carnet() {
   };
 
   const openSong = (id) => {
-    setCurrentId(id); setView("song"); setScrolling(false); setReviseMode(null); setRevealed(0); setFlowIndex(null);
+    setCurrentId(id); setView("song"); setScrolling(false); setReviseMode(null); setRevealed(0); setFlowIndex(null); setMemoPrompt(false);
     requestAnimationFrame(() => sheetRef.current && (sheetRef.current.scrollTop = 0));
   };
   const startNew = () => { setCurrentId(null); setDraft({ title: "", artist: "", body: "" }); setView("edit"); };
@@ -1908,6 +1965,11 @@ export default function Carnet() {
   };
   const library = useMemo(() => ({ songs, showChords, size, speed, sort }), [songs, showChords, size, speed, sort]);
   const shift = (n) => setSongs(songs.map((s) => (s.id === current.id ? { ...s, steps: Math.max(-6, Math.min(6, (s.steps || 0) + n)) } : s)));
+  const setMemo = (n) => setSongs(songs.map((s) => {
+    if (s.id !== current.id) return s;
+    if (!n) { const { memo, ...rest } = s; return rest; }
+    return { ...s, memo: n };
+  }));
 
   const engine = CS ? "ChordSheetJS 15.6" : csTried ? "lecteur interne (librairie inaccessible)" : "chargement…";
   const mo = (n) => (n / 1048576).toFixed(1).replace(".", ",") + " Mo";
@@ -1945,17 +2007,33 @@ export default function Carnet() {
               title={dirty ? "Sauvegarde et partage — carnet modifié depuis la dernière sauvegarde" : "Sauvegarde et partage"}>⇅</button>
             <button className="iconbtn" title="Réglages" onClick={() => setView("settings")}>⚙</button>
           </>
+        ) : view === "song" ? (
+          <>
+            <button className="iconbtn" title="Retour" onClick={() => { setScrolling(false); setView("lib"); }}>‹</button>
+            <div className="spacer" />
+            {songs.length > 1 && (
+              <button className="iconbtn" title="Une autre au hasard" onClick={openRandom}>🎲</button>
+            )}
+            <button className={"iconbtn" + (reviseMode ? " on" : "")} aria-pressed={!!reviseMode} disabled={!revealables}
+              title={reviseMode ? "Quitter la révision" : "Réviser — paroles cachées, révélées ligne à ligne"}
+              onClick={() => (reviseMode ? setReviseMode(null) : startRevise("seq"))}>🎓</button>
+            <button className={"iconbtn" + (showChords ? " on" : "")} aria-pressed={showChords}
+              title={showChords ? "Masquer les accords" : "Afficher les accords"}
+              onClick={() => setShowChords(!showChords)}>♯</button>
+            <button className="iconbtn" disabled={!showChords || !events.length}
+              title="Accords un par un, en diagrammes guitare ou piano"
+              onClick={() => openFlow(0)}>🎼</button>
+            <button className={"iconbtn" + (scrolling ? " on" : "")} aria-pressed={scrolling}
+              title={scrolling ? "Arrêter le défilement automatique" : "Défilement automatique"}
+              onClick={() => setScrolling(!scrolling)}>{scrolling ? "⏸" : "▶"}</button>
+          </>
         ) : (
           <>
             <button className="iconbtn" title="Retour" onClick={() => { setScrolling(false); setView("lib"); }}>‹</button>
             <div className="brand" style={{ fontSize: 15, color: "var(--muted)" }}>
-              {view === "edit" ? (current ? "Modifier" : "Nouvelle grille") : view === "transfer" ? "Transfert" : view === "settings" ? "Réglages" : "Lecture"}
+              {view === "edit" ? (current ? "Modifier" : "Nouvelle grille") : view === "transfer" ? "Transfert" : "Réglages"}
             </div>
             <div className="spacer" />
-            {view === "song" && songs.length > 1 && (
-              <button className="iconbtn" title="Une autre au hasard" onClick={openRandom}>🎲</button>
-            )}
-            {view === "song" && <button className="iconbtn" title="Modifier" onClick={startEdit}>✎</button>}
           </>
         )}
       </div>
@@ -2054,7 +2132,6 @@ export default function Carnet() {
                     </span>
                   )}
                 </button>
-                <button className="carddel" title={`Supprimer « ${s.title} »`} onClick={() => removeSong(s)}>✕</button>
               </div>
               );
             })}
@@ -2066,12 +2143,12 @@ export default function Carnet() {
         <>
           <div className="head">
             <button className={"foldbtn" + (barOpen ? "" : " folded")} aria-expanded={barOpen}
-              title={barOpen ? "Replier les réglages" : "Déplier les réglages"}
+              title={barOpen ? "Replier les réglages de la chanson" : "Déplier les réglages de la chanson"}
               onClick={() => setBarOpen(!barOpen)}><i>▲</i></button>
             <h1 className="title">{current.title}</h1>
             <p className="artist">{current.artist || "Artiste inconnu"}</p>
             <div className={"barwrap" + (barOpen ? "" : " folded")}>
-            <div className="bar">
+            <div className="menu">
               {tags.defs.length > 0 && (
                 <div className="tagpick">
                   {tags.defs.map((t) => {
@@ -2086,38 +2163,24 @@ export default function Carnet() {
                   })}
                 </div>
               )}
-              <button className={"switch" + (showChords ? " on" : "")} aria-pressed={showChords} onClick={() => setShowChords(!showChords)}>
-                <span className="track"><span className="knob" /></span><label>Accords</label>
-              </button>
+              <div className="mrow">
+                <span className="mlab">Appris</span>
+                <Stars value={current.memo || 0} onChange={setMemo} />
+              </div>
               {showChords && (
-                <div className="stepper">
-                  <button onClick={() => shift(-1)} title="Un demi-ton plus bas">−</button>
-                  <span>Ton <b>{steps > 0 ? `+${steps}` : steps}</b></span>
-                  <button onClick={() => shift(1)} title="Un demi-ton plus haut">+</button>
+                <div className="mrow">
+                  <span className="mlab">Tonalité</span>
+                  <div className="stepper">
+                    <button onClick={() => shift(-1)} title="Un demi-ton plus bas">−</button>
+                    <span>Ton <b>{steps > 0 ? `+${steps}` : steps}</b></span>
+                    <button onClick={() => shift(1)} title="Un demi-ton plus haut">+</button>
+                  </div>
                 </div>
               )}
-              {showChords && (
-                <button className="btn slim" disabled={!events.length} onClick={() => openFlow(0)}
-                  title="Voir les accords un par un, en diagrammes guitare ou piano">▦ Diagrammes</button>
-              )}
-              <div className="stepper">
-                <button onClick={() => setSize(Math.max(13, size - 1))}>A−</button>
-                <span>Taille <b>{size}</b></span>
-                <button onClick={() => setSize(Math.min(30, size + 1))}>A+</button>
+              <div className="mact">
+                <button className="btn slim" onClick={startEdit}>✎ Modifier</button>
+                <button className="btn slim danger" onClick={remove}>Supprimer</button>
               </div>
-              <button className={"switch" + (scrolling ? " on" : "")} aria-pressed={scrolling} onClick={() => setScrolling(!scrolling)}>
-                <span className="track"><span className="knob" /></span><label>Défilement</label>
-              </button>
-              <div className="stepper">
-                <button onClick={() => setSpeed(Math.max(1, speed - 1))} title="Plus lent">«</button>
-                <span>Vitesse <b>{speed}</b></span>
-                <button onClick={() => setSpeed(Math.min(12, speed + 1))} title="Plus rapide">»</button>
-              </div>
-              <button className={"switch" + (reviseMode ? " on" : "")} aria-pressed={!!reviseMode}
-                onClick={() => (reviseMode ? setReviseMode(null) : startRevise("seq"))}
-                title="Cacher les paroles et les faire apparaître ligne à ligne">
-                <span className="track"><span className="knob" /></span><label>Révision</label>
-              </button>
             </div>
             </div>
           </div>
@@ -2141,6 +2204,15 @@ export default function Carnet() {
               maskFrom={reviseMode ? visibleLines : null}
               onChordTap={showChords ? onChordTap : null} />
           </div>
+          {scrolling && !reviseMode && (
+            <div className="speedfly">
+              <div className="stepper">
+                <button onClick={() => setSpeed(Math.max(1, speed - 1))} title="Plus lent">«</button>
+                <span>Vitesse <b>{speed}</b></span>
+                <button onClick={() => setSpeed(Math.min(12, speed + 1))} title="Plus rapide">»</button>
+              </div>
+            </div>
+          )}
           {reviseMode && (
             <div className="revbar">
               <div className="inner">
@@ -2165,6 +2237,21 @@ export default function Carnet() {
                   )}
                   <button className="iconbtn" style={{ width: 48, height: "auto" }} title="Quitter la révision"
                     onClick={() => setReviseMode(null)}>✕</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {memoPrompt && (
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Fin de révision"
+              onClick={(e) => { if (e.target === e.currentTarget) setMemoPrompt(false); }}>
+              <div className="modalbox">
+                <div className="modalicon">🎉</div>
+                <h2>Bravo, tout est là !</h2>
+                <p>Où en est « {current.title} » dans votre mémoire ?</p>
+                <Stars big value={memoDraft} onChange={setMemoDraft} />
+                <div className="actions" style={{ justifyContent: "center" }}>
+                  <button className="btn ghost" onClick={() => setMemoPrompt(false)}>Fermer</button>
+                  <button className="btn primary" onClick={() => { setMemo(memoDraft); setMemoPrompt(false); }}>Enregistrer</button>
                 </div>
               </div>
             </div>
@@ -2218,6 +2305,17 @@ export default function Carnet() {
               {offline && offline.waiting
                 ? <button className="btn primary" onClick={() => window.offline.update()}>Installer la nouvelle version</button>
                 : <button className="btn" onClick={() => reloadFresh(true)}>Recharger la dernière version</button>}
+            </div>
+            <div className="field">
+              <label>Lecture</label>
+              <p className="hint">Taille du texte des grilles, pour tout le carnet.</p>
+            </div>
+            <div className="actions">
+              <div className="stepper">
+                <button onClick={() => setSize(Math.max(13, size - 1))}>A−</button>
+                <span>Taille <b>{size}</b></span>
+                <button onClick={() => setSize(Math.min(30, size + 1))}>A+</button>
+              </div>
             </div>
             <div className="field">
               <label>Tags</label>
