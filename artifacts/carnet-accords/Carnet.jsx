@@ -331,15 +331,12 @@ function blocksFallback(text, steps, flats) {
 }
 
 /** Nature d'une section pour la révision, d'après son étiquette (FR/EN) :
- *  les instrumentales n'ont rien à mémoriser, les refrains sont connus par
- *  cœur (on les révèle d'un bloc), tout le reste — couplets, ponts, sections
- *  sans étiquette — se travaille ligne à ligne. */
-function sectionKind(label) {
-  const t = String(label || "").toLowerCase();
-  if (/(intro|outro|solo|instrumental|interlude|coda)/.test(t)) return "instrumental";
-  if (/(refrain|chorus)/.test(t)) return "chorus"; // couvre pré-refrain / pre-chorus
-  return "verse";
-}
+ *  un refrain est connu par cœur, on le révèle d'un bloc ; tout le reste —
+ *  couplets, ponts, sections sans étiquette — se travaille ligne à ligne.
+ *  L'instrumental ne se devine pas au nom (une outro peut porter des
+ *  paroles) : c'est l'absence de paroles, bloc par bloc, qui le dit. */
+const sectionKind = (label) =>
+  /(refrain|chorus)/i.test(String(label || "")) ? "chorus" : "verse"; // couvre pré-refrain / pre-chorus
 
 /* ------------------------------------------------------------------ */
 /* Moteur d'accords : du symbole ("F#m7", "D/F#") aux notes et aux     */
@@ -1883,11 +1880,12 @@ export default function Carnet() {
     if (k != null) openFlow(k);
   };
 
-  // Révision par unités : les instrumentales restent en clair et ne comptent
-  // pas ; un refrain (connu par cœur) forme une seule unité révélée d'un
-  // bloc ; couplets, ponts et sections sans étiquette vont ligne à ligne.
-  // byBlock[i] = numéro d'unité du bloc i (null = jamais masqué).
-  // sections et blancs ne comptent pas, ils restent toujours visibles.
+  // Révision par unités : seuls les blocs qui portent des paroles se
+  // masquent — les lignes d'accords seuls (intro, solo, break au milieu
+  // d'un couplet…) restent en clair et ne comptent pas, quel que soit le
+  // nom de leur section. Un refrain forme une seule unité révélée d'un
+  // bloc ; le reste va ligne à ligne. byBlock[i] = unité du bloc i
+  // (null = jamais masqué : sections, blancs, blocs sans paroles).
   const reviseUnits = useMemo(() => {
     const byBlock = new Array(blocks.length).fill(null);
     const kinds = [];
@@ -1895,8 +1893,9 @@ export default function Carnet() {
     let chorusUnit = -1; // unité de la section refrain en cours
     blocks.forEach((b, i) => {
       if (b.type === "section") { kind = sectionKind(b.label); chorusUnit = -1; return; }
-      if (b.type !== "row" && b.type !== "text") return;
-      if (kind === "instrumental") return;
+      const lyrical = b.type === "row" ? b.cells.some((c) => c.lyrics.trim())
+        : b.type === "text" ? !!b.text.trim() : false;
+      if (!lyrical) return;
       if (kind === "chorus") {
         if (chorusUnit < 0) { chorusUnit = kinds.length; kinds.push("chorus"); }
         byBlock[i] = chorusUnit;
