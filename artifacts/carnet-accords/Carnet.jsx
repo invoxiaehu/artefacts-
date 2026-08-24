@@ -949,6 +949,13 @@ const CSS = `
 .search { width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--line); background:var(--panel);
   color:var(--ink); font-size:15px; margin-bottom:12px; }
 .search::placeholder { color:var(--muted); }
+/* Panneau de filtrage : liste puis tags, sous la recherche. */
+.filterpane { display:flex; flex-direction:column; gap:10px; margin-bottom:12px; }
+.filterpane .listsel { width:100%; }
+.filterpane .toolrow { margin:0; }
+/* Actions de la bibliothèque : trois boutons à parts égales. */
+.actrow { display:flex; gap:8px; margin:0 0 12px; }
+.actrow .btn { flex:1; padding-left:6px; padding-right:6px; white-space:nowrap; }
 .count { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase; margin:0 0 10px; }
 .notice { position:relative; border:1px solid var(--amber-dim); background:var(--acc-faint); border-radius:10px;
   padding:11px 40px 11px 13px; font-size:13px; line-height:1.5; margin-bottom:12px; }
@@ -2389,29 +2396,49 @@ export default function Carnet() {
       {view === "lib" && (
         <>
           <div className="lib">
+            {/* Filtrage d'abord (recherche, liste, tags), le tri ensuite,
+                les actions enfin — sans libellés : les contrôles se
+                comprennent seuls. */}
             <input className="search" value={query} placeholder="Chercher un titre, un artiste…"
               onChange={(e) => setQuery(e.target.value)} />
             {songs.length > 0 && (
-              <div className="toolrow">
-                <span className="lab">Liste</span>
-                <select className="listsel" value={activeList} aria-label="Liste affichée"
-                  onChange={(e) => {
-                    if (e.target.value === "__new__") createList();
-                    else setListFilter(e.target.value);
-                  }}>
-                  <option value="">Toutes les chansons</option>
-                  {lists.defs.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name} ({songs.filter((s) => inList(s, d.id)).length})
-                    </option>
-                  ))}
-                  <option value="__new__">＋ Nouvelle liste…</option>
-                </select>
-              </div>
+                <div className="filterpane">
+                  <select className="listsel" value={activeList} aria-label="Liste affichée"
+                    onChange={(e) => {
+                      if (e.target.value === "__new__") createList();
+                      else setListFilter(e.target.value);
+                    }}>
+                    <option value="">Toutes les chansons</option>
+                    {lists.defs.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name} ({songs.filter((s) => inList(s, d.id)).length})
+                      </option>
+                    ))}
+                    <option value="__new__">＋ Nouvelle liste…</option>
+                  </select>
+                  {tags.defs.length > 0 && (
+                    <div className="toolrow">
+                      {tags.defs.map((t) => {
+                        const on = tagFilter.includes(t.id);
+                        const count = songs.filter((s) => hasTag(s, t.id)).length;
+                        return (
+                          <button key={t.id} className={"tagchip" + (on ? " on" : "")} aria-pressed={on}
+                            title={`${t.label} — ${count} chanson${count > 1 ? "s" : ""}`}
+                            style={on ? { color: tagInk(t.color, theme === "light"), borderColor: tagInk(t.color, theme === "light"), background: t.color + "22" } : undefined}
+                            onClick={() => setTagFilter((f) => (on ? f.filter((x) => x !== t.id) : [...f, t.id]))}>
+                            <span>{t.icon}</span>{count > 0 && <b>{count}</b>}
+                          </button>
+                        );
+                      })}
+                      {tagFilter.length > 0 && (
+                        <button className="btn slim" onClick={() => setTagFilter([])}>Tout voir</button>
+                      )}
+                    </div>
+                  )}
+                </div>
             )}
             {songs.length > 1 && (
               <div className="toolrow">
-                <span className="lab">Tri</span>
                 <div className="seg2">
                   {[["title", "Titre"], ["artist", "Artiste"], ["memo", "Note"]].map(([k, lab]) => (
                     <button key={k} className={sort === k ? "on" : ""} aria-pressed={sort === k}
@@ -2426,33 +2453,16 @@ export default function Carnet() {
                     </button>
                   ))}
                 </div>
-                <div className="spacer" />
+              </div>
+            )}
+            {songs.length > 1 && (
+              <div className="actrow">
                 <button className="btn slim" onClick={openRandom}
                   title="Une chanson au hasard, en privilégiant les mieux connues — pour jouer">🎲 Jouer</button>
                 <button className="btn slim" onClick={openReviseRandom}
                   title="Une chanson au hasard, en privilégiant les moins connues — la révision démarre aussitôt">🎓 Réviser</button>
                 <button className="btn slim" onClick={startQuiz}
                   title="Une ligne au hasard d'une chanson au hasard — l'aviez-vous en tête ? Les scores se mettent à jour en jouant">❓ Quiz</button>
-              </div>
-            )}
-            {songs.length > 0 && tags.defs.length > 0 && (
-              <div className="toolrow">
-                <span className="lab">Tags</span>
-                {tags.defs.map((t) => {
-                  const on = tagFilter.includes(t.id);
-                  const count = songs.filter((s) => hasTag(s, t.id)).length;
-                  return (
-                    <button key={t.id} className={"tagchip" + (on ? " on" : "")} aria-pressed={on}
-                      title={`${t.label} — ${count} chanson${count > 1 ? "s" : ""}`}
-                      style={on ? { color: tagInk(t.color, theme === "light"), borderColor: tagInk(t.color, theme === "light"), background: t.color + "22" } : undefined}
-                      onClick={() => setTagFilter((f) => (on ? f.filter((x) => x !== t.id) : [...f, t.id]))}>
-                      <span>{t.icon}</span>{count > 0 && <b>{count}</b>}
-                    </button>
-                  );
-                })}
-                {tagFilter.length > 0 && (
-                  <button className="btn slim" onClick={() => setTagFilter([])}>Tout voir</button>
-                )}
               </div>
             )}
             {status && (
@@ -2491,7 +2501,12 @@ export default function Carnet() {
               </div>
             )}
             {ready && songs.length > 0 && filtered.length === 0 && (
-              <div className="empty"><p>Rien ne correspond à « {query} ».</p></div>
+              <div className="empty">
+                {/* Dire lequel des filtres vide la liste. */}
+                {query.trim()
+                  ? <p>Rien ne correspond à « {query} ».</p>
+                  : <p>Rien dans cette sélection — la liste ou les tags actifs ne retiennent aucune chanson.</p>}
+              </div>
             )}
             {filtered.map((s) => {
               const marks = tagsOf(s);
