@@ -132,8 +132,13 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   n'est ni masquée ni comptée : tablature (`|` + tirets), ligne commençant
   par `|` (grille de mesures, légende de tab), ligne sans aucune lettre
   (séparateurs `****`, comptages), comptage de temps (« x2 », « 1 e & a » —
-  au moins un chiffre), consigne de jeu sans accords finissant par « : »
-  ou entre parenthèses.
+  au moins un chiffre), ligne entière entre parenthèses (« (Repeat to
+  Fade) » — même avec accords accolés par l'alignement PDF), ligne ouvrant
+  sur `[` ou portant un crochet échappé `\[…\]` (exports UG : « \[Chorus\]
+  (play loud) », accords inline et leurs fragments), étiquette de section
+  en texte (mot de structure + « : » : « Verse 1: », « Outro: (…) »), et
+  consigne de jeu sans accords finissant par « : » — la condition d'accords
+  de cette dernière règle protège une parole chantée en « … : ».
 - Scoring automatique : la révision est « pipelinée » — un bouton « Révéler »
   pour la première unité, puis chaque ✓ Savais / ✗ Savais pas juge la
   dernière unité révélée ET révèle la suivante ; la session ne finit qu'une

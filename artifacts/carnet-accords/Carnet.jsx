@@ -1953,9 +1953,18 @@ export default function Carnet() {
     // barre (grille de mesures « | Am | % | », légende « | h  Hammer-on »),
     // ligne sans la moindre lettre (séparateurs « **** », traits, comptages
     // purs), comptage de temps avec lettres résiduelles (« x2 »,
-    // « 1 e & a 2 » — au moins un chiffre), et consigne de jeu SANS accords
-    // (finissant par « : » ou tenant entière entre parenthèses) — la
-    // condition d'accords évite d'exclure une parole chantée en « … : ».
+    // « 1 e & a 2 » — au moins un chiffre), ligne entière entre parenthèses
+    // (« (Repeat to Fade) », « (x3, very short) ») — même quand l'alignement
+    // PDF lui a accolé des accords —, ligne ouvrant sur un crochet
+    // (« [Chorus] (play loud) » : étiquette qui n'a pas fait section à cause
+    // du texte qui suit), crochet échappé « \[…\] » n'importe où (exports
+    // Ultimate Guitar : « \[Chorus\] », accords inline « \[Bm\] \[E\] » et
+    // leurs fragments coupés « m\] \[E\] » — une parole ne contient jamais
+    // d'antislash), étiquette de section écrite en texte
+    // (« Verse 1: », « Outro: (with Vocal Harmonies) » — mot de structure
+    // suivi de « : », avec ou sans accords), et consigne de jeu SANS accords
+    // finissant par « : » — là, la condition d'accords évite d'exclure une
+    // parole chantée en « … : ».
     // Une vraie parole contient des lettres et ne commence jamais par « | ».
     const notation = (b) => {
       const s = textOf(b).trim();
@@ -1964,7 +1973,10 @@ export default function Carnet() {
       if (/^\|/.test(s)) return true;
       if (!/[a-zà-öø-ÿ]/i.test(s)) return true;
       if (/^(?=.*\d)[\d\s+&.,·|()xea-]+$/i.test(s)) return true;
-      if (chordless(b) && (/:$/.test(s) || /^\(.*\)$/.test(s))) return true;
+      if (/^\(.*\)$/.test(s)) return true;
+      if (/^\[/.test(s) || /\\[\[\]]/.test(s)) return true;
+      if (/^(intro|outro|verse|chorus|bridge|solo|interlude|break|coda|refrain|couplet|pont|pr[eé][- ]?(refrain|chorus))\b[^a-zà-öø-ÿ]*:/i.test(s)) return true;
+      if (chordless(b) && /:$/.test(s)) return true;
       return false;
     };
     blocks.forEach((b, i) => {
