@@ -1131,7 +1131,8 @@ const CSS = `
 /* Popup de fin de révision — au-dessus de la revbar (z-index 4). */
 .modal { position:absolute; inset:0; z-index:8; display:flex; align-items:center; justify-content:center;
   padding:20px; background:rgba(0,0,0,.55); }
-.modalbox { width:100%; max-width:340px; background:var(--panel); border:1px solid var(--line);
+.modalbox { width:100%; max-width:340px; max-height:100%; overflow-y:auto;
+  background:var(--panel); border:1px solid var(--line);
   border-radius:14px; padding:24px 20px 20px; text-align:center;
   display:flex; flex-direction:column; align-items:center; gap:12px; }
 .modalicon { font-size:34px; line-height:1; }
@@ -1139,6 +1140,24 @@ const CSS = `
   font-size:22px; margin:0; color:var(--amber); }
 .modalbox p { margin:0; font-size:13.5px; color:var(--muted); line-height:1.5; }
 .modalscore { font-family:'Barlow Condensed'; font-weight:700; font-size:42px; line-height:1; color:var(--amber); }
+.modalbox p.modalcount { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em;
+  text-transform:uppercase; }
+.seg2.wide { width:100%; }
+.seg2.wide button { flex:1; }
+/* Détail de fin de quiz : même repli par grille 0fr/1fr que le menu de chanson. */
+.qdwrap { width:100%; display:grid; grid-template-rows:1fr; opacity:1;
+  transition:grid-template-rows .28s ease, opacity .22s; }
+.qdwrap.folded { grid-template-rows:0fr; opacity:0; }
+.qdlist { overflow:hidden; text-align:left; }
+.qdrow { display:flex; align-items:center; gap:10px; padding:7px 2px; border-top:1px solid var(--line); }
+.qdt { flex:1; min-width:0; }
+.qdt b { display:block; font-size:13px; font-weight:600;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.qdt i { font-style:normal; font-family:'JetBrains Mono'; font-size:9.5px; letter-spacing:.08em; color:var(--muted); }
+.qdd { font-family:'JetBrains Mono'; font-size:11.5px; white-space:nowrap; color:var(--muted); }
+.qdd b { font-weight:700; margin-left:4px; color:var(--ink); }
+.qdd b.up { color:var(--ok); }
+.qdd b.dn { color:var(--hot); }
 @media (min-width:720px) { .sheet { padding:26px 32px calc(130px + var(--sab)); }
   .lib { padding:18px 32px calc(32px + var(--sab)); }
   .flowdiag svg { width:min(44vh, 380px); }
@@ -1756,8 +1775,14 @@ export default function Carnet() {
   const [quiz, setQuiz] = useState(null); // null | { asked, correct } — la partie survit aux changements de chanson
   const [quizEnd, setQuizEnd] = useState(null); // score affiché à l'arrêt de la partie
   const [quizQ, setQuizQ] = useState(0); // nonce de question : re-arme même quand le hasard retombe sur la même chanson
+  const [quizAsk, setQuizAsk] = useState(false); // popup de lancement : sur quel vivier tirer ?
+  const [quizScope, setQuizScope] = useState("all"); // "all" = tout l'affichage | "weak" = sous le seuil d'étoiles
+  const [quizMax, setQuizMax] = useState(3); // seuil du vivier « moins connues » (note ≤ seuil)
+  const [quizDetail, setQuizDetail] = useState(false); // détail avant → après déplié en fin de partie
   const pendingQuizRef = useRef(false); // question à armer dès la chanson ouverte
   const quizDeadRef = useRef(new Set()); // chansons sans paroles croisées pendant la partie : écartées du vivier
+  const quizPoolRef = useRef(null); // ids figés au départ de la partie (null = toute la sous-liste affichée)
+  const quizStatsRef = useRef(new Map()); // id → { title, artist, before, after, asked, correct } de la partie
   const [backup, setBackup] = useState(null); // { at, sig } de la dernière sauvegarde en fichier
   const sheetRef = useRef(null);
   const fileRef = useRef(null);
@@ -2020,12 +2045,15 @@ export default function Carnet() {
   };
   /** Une réponse « savais » / « savais pas » fait faire un pas d'EMA au score
    *  de la chanson, écrit à chaque fois : une session interrompue a déjà
-   *  compté. Le pas part de la valeur non arrondie gardée en ref. */
+   *  compté. Le pas part de la valeur non arrondie gardée en ref. Renvoie le
+   *  score affiché avant et après le pas — c'est ce que le quiz récapitule. */
   const applyAuto = (known) => {
+    const before = (current && current.memo) || 0;
     const next = emaStep(memoLiveRef.current ?? (current && current.memo), known, revealables);
     memoLiveRef.current = next;
     const m = clampMemo(next);
     setSongs((prev) => prev.map((s) => (s.id === currentId ? { ...s, memo: m, memoAuto: true } : s)));
+    return { before, after: m };
   };
   /** Le jugement porte sur la dernière unité révélée : en révision, répondre
    *  révèle du même geste l'unité suivante ; en quiz, il enchaîne sur la
@@ -2033,7 +2061,20 @@ export default function Carnet() {
   const answer = (known) => {
     if (!reviseMode || revealed === 0) return;
     if (reviseMode === "quiz") {
-      applyAuto(known);
+      const step = applyAuto(known);
+      // Récapitulatif de la partie : « avant » est le score au tout premier
+      // passage de la chanson, « après » le plus récent — une chanson tirée
+      // deux fois ne raconte qu'un seul mouvement.
+      const stats = quizStatsRef.current;
+      const seen = stats.get(currentId);
+      stats.set(currentId, {
+        title: current.title,
+        artist: current.artist,
+        before: seen ? seen.before : step.before,
+        after: step.after,
+        asked: (seen ? seen.asked : 0) + 1,
+        correct: (seen ? seen.correct : 0) + (known ? 1 : 0),
+      });
       setQuiz((g) => g && { asked: g.asked + 1, correct: g.correct + (known ? 1 : 0) });
       quizNext();
       return;
@@ -2220,20 +2261,31 @@ export default function Carnet() {
   /* Quiz : une ligne au hasard d'une chanson au hasard de la sous-liste
      affichée. Tirage UNIFORME — esprit jeu, contrairement aux deux boutons
      pondérés ci-dessus — en évitant de retomber sur la chanson en cours
-     tant que le vivier le permet. */
+     tant que le vivier le permet. Le vivier est choisi au lancement : tout
+     l'affichage, ou seulement les chansons sous un seuil d'étoiles. Une
+     chanson non notée compte pour 0, donc toujours parmi les moins connues. */
+  const quizPool = quizScope === "weak" ? filtered.filter((s) => (s.memo || 0) <= quizMax) : filtered;
   const quizNext = () => {
     const dead = quizDeadRef.current;
-    let pool = filtered.filter((s) => s.id !== currentId && !dead.has(s.id));
-    if (!pool.length) pool = filtered.filter((s) => !dead.has(s.id)); // une seule chanson : la répétition est permise
+    const keep = quizPoolRef.current;
+    // Vivier figé au départ : répondre juste fait monter le score, mais la
+    // chanson ne doit pas quitter la partie en cours de route pour autant.
+    const base = keep ? filtered.filter((s) => keep.has(s.id)) : filtered;
+    let pool = base.filter((s) => s.id !== currentId && !dead.has(s.id));
+    if (!pool.length) pool = base.filter((s) => !dead.has(s.id)); // une seule chanson : la répétition est permise
     if (!pool.length) { stopQuiz(); return; }
     const pick = pool[Math.floor(Math.random() * pool.length)];
     pendingQuizRef.current = true;
     setQuizQ((q) => q + 1);
     openSong(pick.id);
   };
+  const askQuiz = () => { if (filtered.length) setQuizAsk(true); };
   const startQuiz = () => {
-    if (!filtered.length) return;
+    if (!quizPool.length) return;
+    quizPoolRef.current = quizScope === "weak" ? new Set(quizPool.map((s) => s.id)) : null;
     quizDeadRef.current = new Set();
+    quizStatsRef.current = new Map();
+    setQuizAsk(false);
     setQuizEnd(null);
     setQuiz({ asked: 0, correct: 0 });
     quizNext();
@@ -2243,7 +2295,8 @@ export default function Carnet() {
     setQuiz(null);
     setReviseMode(null);
     pendingQuizRef.current = false;
-    if (game && game.asked > 0) setQuizEnd(game);
+    setQuizDetail(false);
+    if (game && game.asked > 0) setQuizEnd({ ...game, rows: [...quizStatsRef.current.values()] });
     else setView("lib");
   };
   const resetAll = async () => {
@@ -2494,7 +2547,7 @@ export default function Carnet() {
                   title="Une chanson au hasard, en privilégiant les mieux connues — pour jouer">🎲 Jouer</button>
                 <button className="btn slim" onClick={openReviseRandom}
                   title="Une chanson au hasard, en privilégiant les moins connues — la révision démarre aussitôt">🎓 Réviser</button>
-                <button className="btn slim" onClick={startQuiz}
+                <button className="btn slim" onClick={askQuiz}
                   title="Une ligne au hasard d'une chanson au hasard — l'aviez-vous en tête ? Les scores se mettent à jour en jouant">❓ Quiz</button>
               </div>
             )}
@@ -2566,6 +2619,40 @@ export default function Carnet() {
               );
             })}
           </div>
+          {quizAsk && (
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Lancer un quiz"
+              onClick={(e) => { if (e.target === e.currentTarget) setQuizAsk(false); }}>
+              <div className="modalbox">
+                <div className="modalicon">❓</div>
+                <h2>Quiz</h2>
+                <p>Une ligne au hasard d'une chanson au hasard — l'aviez-vous en tête ?</p>
+                <div className="seg2 wide">
+                  <button className={quizScope === "all" ? "on" : ""} aria-pressed={quizScope === "all"}
+                    title="Tirage au hasard, à égalité, parmi toutes les chansons affichées"
+                    onClick={() => setQuizScope("all")}>Toutes</button>
+                  <button className={quizScope === "weak" ? "on" : ""} aria-pressed={quizScope === "weak"}
+                    title="Ne tirer que les chansons dont la note ne dépasse pas le seuil"
+                    onClick={() => setQuizScope("weak")}>Les moins connues</button>
+                </div>
+                {quizScope === "weak" && (
+                  <>
+                    <p>Note au plus égale à <b style={{ color: "var(--amber)" }}>★ {quizMax}</b></p>
+                    <Stars value={quizMax} onChange={(n) => setQuizMax(n || 1)} />
+                  </>
+                )}
+                <p className="modalcount">
+                  {quizPool.length === 0
+                    ? "Aucune chanson dans ce vivier"
+                    : `${quizPool.length} chanson${quizPool.length > 1 ? "s" : ""} dans le tirage`}
+                  {quizPool.length > 0 && quizPool.length < filtered.length && ` sur ${filtered.length}`}
+                </p>
+                <div className="actions" style={{ justifyContent: "center" }}>
+                  <button className="btn ghost" onClick={() => setQuizAsk(false)}>Annuler</button>
+                  <button className="btn primary" disabled={!quizPool.length} onClick={startQuiz}>Commencer</button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
 
@@ -2766,6 +2853,33 @@ export default function Carnet() {
                   {Math.round((100 * quizEnd.correct) / quizEnd.asked)} % de bonnes réponses —
                   les scores des chansons jouées ont été mis à jour.
                 </p>
+                {quizEnd.rows && quizEnd.rows.length > 0 && (
+                  <>
+                    <button className="btn slim ghost" style={{ width: "100%" }} aria-expanded={quizDetail}
+                      title="Score de chaque chanson avant et après la partie"
+                      onClick={() => setQuizDetail(!quizDetail)}>
+                      Détail ({quizEnd.rows.length}) {quizDetail ? "▴" : "▾"}
+                    </button>
+                    <div className={"qdwrap" + (quizDetail ? "" : " folded")}>
+                      <div className="qdlist">
+                        {quizEnd.rows.map((r, i) => (
+                          <div className="qdrow" key={i}>
+                            <div className="qdt">
+                              <b>{r.title}</b>
+                              <i>✓ {r.correct}/{r.asked}</i>
+                            </div>
+                            <div className="qdd">
+                              {r.before ? fmtMemo(r.before) : "—"} →
+                              <b className={r.after > r.before ? "up" : r.after < r.before ? "dn" : ""}>
+                                {fmtMemo(r.after)}
+                              </b>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
                 <div className="actions" style={{ justifyContent: "center" }}>
                   <button className="btn primary" onClick={() => { setQuizEnd(null); setView("lib"); }}>Retour à la liste</button>
                 </div>
