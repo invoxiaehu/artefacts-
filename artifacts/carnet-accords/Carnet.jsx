@@ -914,39 +914,61 @@ function amJsonp(url, ms = 8000) {
   });
 }
 
-/** GET JSON avec délai — les miroirs publics peuvent être lents. */
-async function amFetch(url, ms = 8000) {
+/** GET avec délai, puis extraction JSON tolérante : les miroirs enrobent
+ *  parfois la réponse (préambule texte de r.jina.ai, enveloppe { contents }
+ *  d'allorigins /get) — on parse à partir de la première accolade et on
+ *  déballe l'enveloppe éventuelle. */
+async function amFetch(url, ms = 12000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(url, { signal: ctrl.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const d = await res.json();
+    const text = await res.text();
+    const i = text.indexOf("{");
+    if (i < 0) throw new Error("réponse inattendue");
+    let d = JSON.parse(text.slice(i));
+    if (d && typeof d.contents === "string") d = JSON.parse(d.contents);
     if (!d || !Array.isArray(d.results)) throw new Error("réponse inattendue");
     return d.results;
   } finally { clearTimeout(t); }
 }
 
-/** L'appel direct répond Access-Control-Allow-Origin: * … mais depuis un
- *  iPhone, Apple redirige /search vers le schéma natif musics:// (que
- *  Safari ne peut pas suivre) et refuse aussi le JSONP — vérifié : la
- *  cible d'usage principale de l'app échoue en direct. D'où la chaîne de
- *  replis : fetch, JSONP, puis des miroirs CORS publics qui relaient la
- *  même API sans toucher aux données. Échec total → erreur explicite,
- *  l'appelant n'enregistre rien (jamais de « non trouvé » sur panne). */
+/* Voies de secours quand l'appel direct échoue : sur iPhone, Apple redirige
+   /search vers le schéma natif musics:// (que Safari ne peut pas suivre) et
+   refuse aussi le JSONP — vérifié : la cible d'usage principale de l'app
+   échoue toujours en direct. Les miroirs CORS publics relaient la même API
+   sans toucher aux données, mais aucun n'est fiable seul (pannes, limites
+   de débit — mesuré : allorigins et codetabs répondent moins d'une fois sur
+   trois). Alors on court TOUTES les voies en parallèle et la première qui
+   répond gagne ; elle est retentée seule au coup suivant, pour qu'un scan
+   de bibliothèque ne martèle ni les perdants ni les limites de débit. */
+const AM_MIRRORS = [
+  (u) => amJsonp(u),
+  (u) => amFetch("https://api.cors.lol/?url=" + encodeURIComponent(u)),
+  (u) => amFetch("https://r.jina.ai/" + u),
+  (u) => amFetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(u)),
+  (u) => amFetch("https://api.allorigins.win/get?url=" + encodeURIComponent(u)),
+  (u) => amFetch("https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(u)),
+];
+let amWinner = -1;
+
+/** Échec total → erreur explicite, l'appelant n'enregistre rien (jamais de
+ *  « non trouvé » sur panne). */
 async function searchItunes(title, artist) {
   if (navigator.onLine === false) throw new Error("hors ligne");
   const url = amSearchUrl(title, artist);
-  const attempts = [
-    () => amFetch(url),
-    () => amJsonp(url),
-    () => amFetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(url), 12000),
-    () => amFetch("https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(url), 12000),
-  ];
-  for (const attempt of attempts) {
-    try { return await attempt(); } catch { /* voie suivante */ }
+  try { return await amFetch(url, 6000); } catch { /* iPhone, ou réseau lent */ }
+  if (amWinner >= 0) {
+    try { return await AM_MIRRORS[amWinner](url); } catch { amWinner = -1; }
   }
-  throw new Error("service injoignable");
+  try {
+    const first = await Promise.any(AM_MIRRORS.map((run, i) => run(url).then((results) => ({ results, i }))));
+    amWinner = first.i;
+    return first.results;
+  } catch {
+    throw new Error("service injoignable");
+  }
 }
 
 /* Versions parasites : disqualifiantes (−40) quand le mot apparaît chez le
@@ -2651,7 +2673,10 @@ export default function Carnet() {
       if (amStopRef.current) break;
       const s = targets[i];
       try {
-        const c = classifyAm(await searchItunes(s.title, s.artist), s.title, s.artist);
+        let found;
+        try { found = await searchItunes(s.title, s.artist); }
+        catch { await sleep(2000); found = await searchItunes(s.title, s.artist); } // une panne ponctuelle ne tue pas un scan de plusieurs minutes
+        const c = classifyAm(found, s.title, s.artist);
         if (c.kind === "auto") { setAm(s.id, amFieldsFrom(c.best)); bump("found"); }
         else if (c.kind === "pick") bump("ambiguous"); // rien d'enregistré : à régler depuis la chanson
         else { setAm(s.id, { none: true }); bump("missed"); }
