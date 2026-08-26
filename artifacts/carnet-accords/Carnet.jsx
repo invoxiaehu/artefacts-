@@ -914,24 +914,29 @@ function amJsonp(url, ms = 8000) {
   });
 }
 
-/** GET avec délai, puis extraction JSON tolérante : les miroirs enrobent
- *  parfois la réponse (préambule texte de r.jina.ai, enveloppe { contents }
- *  d'allorigins /get) — on parse à partir de la première accolade et on
- *  déballe l'enveloppe éventuelle. */
-async function amFetch(url, ms = 12000) {
+/** GET texte avec délai. */
+async function amFetchText(url, ms = 12000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(url, { signal: ctrl.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const text = await res.text();
-    const i = text.indexOf("{");
-    if (i < 0) throw new Error("réponse inattendue");
-    let d = JSON.parse(text.slice(i));
-    if (d && typeof d.contents === "string") d = JSON.parse(d.contents);
-    if (!d || !Array.isArray(d.results)) throw new Error("réponse inattendue");
-    return d.results;
+    return await res.text();
   } finally { clearTimeout(t); }
+}
+
+/** GET avec extraction JSON tolérante : les miroirs enrobent parfois la
+ *  réponse (préambule texte de r.jina.ai, enveloppe { contents }
+ *  d'allorigins /get) — on parse à partir de la première accolade et on
+ *  déballe l'enveloppe éventuelle. */
+async function amFetch(url, ms = 12000) {
+  const text = await amFetchText(url, ms);
+  const i = text.indexOf("{");
+  if (i < 0) throw new Error("réponse inattendue");
+  let d = JSON.parse(text.slice(i));
+  if (d && typeof d.contents === "string") d = JSON.parse(d.contents);
+  if (!d || !Array.isArray(d.results)) throw new Error("réponse inattendue");
+  return d.results;
 }
 
 /* Voies de secours quand l'appel direct échoue : sur iPhone, Apple redirige
@@ -969,6 +974,67 @@ async function searchItunes(title, artist) {
   } catch {
     throw new Error("service injoignable");
   }
+}
+
+/* Dernier recours quand l'index iTunes ne connaît pas la chanson : la page
+   de recherche de music.apple.com, qui cherche dans le VRAI catalogue
+   streaming (l'API iTunes Search n'indexe que le magasin d'achat — le
+   « Creep » original de Radiohead, par exemple, n'y existe plus). La page
+   embarque ses résultats côté serveur (script serialized-server-data) ;
+   on les récolte en marchant le JSON à la recherche des descripteurs de
+   chansons, sans dépendre du chemin exact des sections. Miroirs bruts
+   seulement : music.apple.com est sans CORS, et r.jina.ai réécrirait le
+   HTML en markdown, perdant le script. */
+const AM_RAW_MIRRORS = [
+  (u) => amFetchText("https://api.cors.lol/?url=" + encodeURIComponent(u), 15000),
+  (u) => amFetchText("https://api.allorigins.win/raw?url=" + encodeURIComponent(u), 15000),
+  (u) => amFetchText("https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(u), 15000),
+];
+
+function amWebResults(html) {
+  const m = /<script[^>]*id="serialized-server-data"[^>]*>([\s\S]*?)<\/script>/.exec(html);
+  if (!m) return [];
+  const seen = new Set(), out = [];
+  (function walk(o) {
+    if (!o || typeof o !== "object" || out.length >= 25) return;
+    if (Array.isArray(o)) { for (const v of o) walk(v); return; }
+    const cd = o.contentDescriptor;
+    if (cd && cd.kind === "song" && typeof cd.url === "string" && o.title) {
+      const id = Number(cd.identifiers && cd.identifiers.storeAdamID);
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        out.push({
+          trackId: id, trackViewUrl: cd.url, trackName: String(o.title),
+          artistName: String((o.subtitleLinks && o.subtitleLinks[0] && o.subtitleLinks[0].title) || ""),
+          collectionName: "",
+        });
+      }
+    }
+    for (const k in o) walk(o[k]);
+  })(JSON.parse(m[1]));
+  return out;
+}
+
+async function searchAmWeb(title, artist) {
+  const u = "https://music.apple.com/fr/search?term="
+    + encodeURIComponent(`${stripDecorRaw(title)} ${artist || ""}`.replace(/\s+/g, " ").trim());
+  return amWebResults(await Promise.any(AM_RAW_MIRRORS.map((run) => run(u).then((text) => {
+    if (!text.includes("serialized-server-data")) throw new Error("page inattendue");
+    return text;
+  }))));
+}
+
+/** Recherche + classement, avec le repli web quand la voie classique ne
+ *  trouve rien de convaincant. Le repli qui échoue (miroirs à genoux, page
+ *  remaniée) ne casse rien : le « none » de la voie classique reste rendu. */
+async function amFind(title, artist) {
+  const c = classifyAm(await searchItunes(title, artist), title, artist);
+  if (c.kind !== "none") return c;
+  try {
+    const c2 = classifyAm(await searchAmWeb(title, artist), title, artist);
+    if (c2.kind !== "none") return c2;
+  } catch { /* repli indisponible */ }
+  return c;
 }
 
 /* Versions parasites : disqualifiantes (−40) quand le mot apparaît chez le
@@ -1009,6 +1075,11 @@ function scoreMatch(r, title, artist) {
   else if (wordOverlap(aR, aL) >= 0.5) aScore = 12;
   else aScore = -35;
   let s = tScore + aScore;
+  // Présent dans l'index d'achat mais pas streamable : le lien ouvrirait
+  // « indisponible dans votre pays ». Assez pour perdre l'auto (90 → 55),
+  // pas pour disparaître de « Changer ». Les résultats du repli web n'ont
+  // pas ce champ (catalogue streaming : tout y est jouable) — pas touchés.
+  if (r.isStreamable === false) s -= 35;
   const hay = fold(`${r.trackName} ${r.collectionName || ""}`);
   for (const w of AM_BAD) if (hasWord(hay, w) && !hasWord(tL, w)) s -= 40;
   if (!(tScore >= 45 && aScore === 40)) {
@@ -2654,7 +2725,7 @@ export default function Carnet() {
   const amSearchOne = async (song, { pickAlways = false } = {}) => {
     setAmBusyId(song.id); setAmErr(null);
     try {
-      const c = classifyAm(await searchItunes(song.title, song.artist), song.title, song.artist);
+      const c = await amFind(song.title, song.artist);
       if (c.kind === "auto" && !pickAlways) setAm(song.id, amFieldsFrom(c.best));
       else if (c.top.length) setAmPick({ songId: song.id, results: c.top });
       else if (pickAlways) setAmErr({ id: song.id, msg: "Rien d'autre de crédible" }); // on garde le lien actuel
@@ -2664,7 +2735,9 @@ export default function Carnet() {
     } finally { setAmBusyId(null); }
   };
   const amScanAll = async () => {
-    const targets = songs.filter((s) => !s.am); // figé au départ : les ambigus restent à retenter
+    // Figé au départ : les ambigus restent à retenter. Les « non trouvé »
+    // repassent aussi — le repli web peut les débloquer d'un scan à l'autre.
+    const targets = songs.filter((s) => !s.am || s.am.none);
     if (!targets.length || (amScan && amScan.running)) return;
     amStopRef.current = false;
     setAmScan({ done: 0, total: targets.length, found: 0, ambiguous: 0, missed: 0, running: true });
@@ -2673,10 +2746,9 @@ export default function Carnet() {
       if (amStopRef.current) break;
       const s = targets[i];
       try {
-        let found;
-        try { found = await searchItunes(s.title, s.artist); }
-        catch { await sleep(2000); found = await searchItunes(s.title, s.artist); } // une panne ponctuelle ne tue pas un scan de plusieurs minutes
-        const c = classifyAm(found, s.title, s.artist);
+        let c;
+        try { c = await amFind(s.title, s.artist); }
+        catch { await sleep(2000); c = await amFind(s.title, s.artist); } // une panne ponctuelle ne tue pas un scan de plusieurs minutes
         if (c.kind === "auto") { setAm(s.id, amFieldsFrom(c.best)); bump("found"); }
         else if (c.kind === "pick") bump("ambiguous"); // rien d'enregistré : à régler depuis la chanson
         else { setAm(s.id, { none: true }); bump("missed"); }
@@ -2695,7 +2767,7 @@ export default function Carnet() {
   const cached = offline && offline.vendor && offline.vendor.total > 0 && offline.vendor.done >= offline.vendor.total;
   // Réseau : offline est null dans un aperçu d'artefact — considéré en ligne.
   const online = !offline || offline.online !== false;
-  const amMissing = songs.filter((s) => !s.am).length;
+  const amMissing = songs.filter((s) => !s.am || s.am.none).length;
   const offlineHint = !offline || !offline.supported
     ? "Indisponible ici : garder l'application en cache demande un service worker, donc une page servie en HTTPS — c'est le cas sur GitHub Pages, pas dans un aperçu d'artefact."
     : !offline.shell
