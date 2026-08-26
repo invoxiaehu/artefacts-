@@ -878,6 +878,11 @@ const mergeByTitle = (prev, added) => {
  *  translittérés (é → e), casse et ponctuation ignorées — contrairement
  *  à normPart, qui supprime purement les caractères accentués. */
 const fold = (s) => String(s || "").toLowerCase()
+  // Apostrophes exotiques d'abord : l'okina ʻ de « Kamakawiwoʻole » porte la
+  // propriété Diacritic et serait SUPPRIMÉ par la ligne suivante, quand
+  // l'apostrophe ASCII d'Apple devient un espace — les deux graphies ne se
+  // compareraient jamais égales. Espace pour toute la famille.
+  .replace(/[ʻʼʹ‘’]/g, " ")
   .normalize("NFD").replace(/\p{Diacritic}/gu, "")
   .replace(/&/g, " and ")
   .replace(/[^a-z0-9]+/g, " ")
@@ -895,8 +900,17 @@ const foldLoose = (t) => fold(stripDecorRaw(t));
 const hasWord = (hay, w) => (" " + hay + " ").includes(" " + w + " ");
 
 const AM_SEARCH = "https://itunes.apple.com/search?media=music&entity=song&country=FR&limit=10&term=";
-const amSearchUrl = (title, artist) =>
-  AM_SEARCH + encodeURIComponent(`${stripDecorRaw(title)} ${artist || ""}`.replace(/\s+/g, " ").trim());
+/** Terme de recherche 100 % ASCII : Apple est insensible aux diacritiques
+ *  (« Elysees » trouve « Élysées »), et un caractère exotique encodé
+ *  (l'okina %CA%BB de Kamakawiwoʻole) se fait double-encoder par certains
+ *  miroirs CORS — Apple reçoit un terme mutilé et répond zéro résultat,
+ *  que l'app enregistrait en faux « non trouvé ». */
+const amTerm = (title, artist) => `${stripDecorRaw(title)} ${artist || ""}`
+  .replace(/[ʻʼʹ‘’]/g, " ") // même règle que fold
+  .normalize("NFD").replace(/\p{Diacritic}/gu, "")
+  .replace(/[^\x20-\x7E]+/g, " ")
+  .replace(/\s+/g, " ").trim();
+const amSearchUrl = (title, artist) => AM_SEARCH + encodeURIComponent(amTerm(title, artist));
 
 /** Repli JSONP officiel de l'API (paramètre callback=) : même mécanique
  *  que loadScript, avec callback global nommé, délai et nettoyage. */
@@ -1016,8 +1030,7 @@ function amWebResults(html) {
 }
 
 async function searchAmWeb(title, artist) {
-  const u = "https://music.apple.com/fr/search?term="
-    + encodeURIComponent(`${stripDecorRaw(title)} ${artist || ""}`.replace(/\s+/g, " ").trim());
+  const u = "https://music.apple.com/fr/search?term=" + encodeURIComponent(amTerm(title, artist));
   return amWebResults(await Promise.any(AM_RAW_MIRRORS.map((run) => run(u).then((text) => {
     if (!text.includes("serialized-server-data")) throw new Error("page inattendue");
     return text;
@@ -1032,7 +1045,8 @@ async function amFind(title, artist) {
   if (c.kind !== "none") return c;
   try {
     const c2 = classifyAm(await searchAmWeb(title, artist), title, artist);
-    if (c2.kind !== "none") return c2;
+    // Deux « none » : rendre celui qui a au moins des candidats à montrer.
+    if (c2.kind !== "none" || (!c.top.length && c2.top.length)) return c2;
   } catch { /* repli indisponible */ }
   return c;
 }
@@ -1094,7 +1108,11 @@ function scoreMatch(r, title, artist) {
 function classifyAm(results, title, artist) {
   const scored = (results || []).map((r) => ({ r, s: scoreMatch(r, title, artist) }))
     .sort((a, b) => b.s - a.s);
-  const top = scored.slice(0, 3).filter((x) => x.s >= 25).map((x) => x.r);
+  // Plancher bas pour le choix MANUEL : un titre exact sous un artiste
+  // crédité autrement (« IZ » vs « Israel Kamakawiwo'ole ») score 15 — trop
+  // peu pour tout enregistrement automatique, mais l'humain qui a cliqué
+  // « Rechercher » saura trancher ; mieux qu'un « non trouvé » sans appel.
+  const top = scored.slice(0, 3).filter((x) => x.s >= 10).map((x) => x.r);
   const best = scored[0];
   if (!best || best.s < AM_MAYBE) return { kind: "none", top };
   if (best.s >= AM_AUTO) return { kind: "auto", best: best.r, top };
