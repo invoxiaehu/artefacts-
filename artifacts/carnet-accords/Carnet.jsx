@@ -878,11 +878,12 @@ const mergeByTitle = (prev, added) => {
  *  translittérés (é → e), casse et ponctuation ignorées — contrairement
  *  à normPart, qui supprime purement les caractères accentués. */
 const fold = (s) => String(s || "").toLowerCase()
-  // Apostrophes exotiques d'abord : l'okina ʻ de « Kamakawiwoʻole » porte la
-  // propriété Diacritic et serait SUPPRIMÉ par la ligne suivante, quand
-  // l'apostrophe ASCII d'Apple devient un espace — les deux graphies ne se
-  // compareraient jamais égales. Espace pour toute la famille.
-  .replace(/[ʻʼʹ‘’]/g, " ")
+  // Toute la famille des apostrophes est SUPPRIMÉE (pas espacée) avant le
+  // reste : « Cant » sans apostrophe doit égaler le « Can't » d'Apple
+  // (« can t » en deux mots ne le ferait pas), et l'okina ʻ de
+  // « Kamakawiwoʻole » — que la ligne des diacritiques avalerait — doit
+  // égaler l'apostrophe ASCII de la graphie d'Apple.
+  .replace(/['ʻʼʹ‘’]/g, "")
   .normalize("NFD").replace(/\p{Diacritic}/gu, "")
   .replace(/&/g, " and ")
   .replace(/[^a-z0-9]+/g, " ")
