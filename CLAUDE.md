@@ -159,6 +159,20 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   ré-armement passe par `pendingQuizRef` + nonce `quizQ` (obligatoire quand
   le hasard retombe sur la même chanson) ; les chansons sans paroles
   croisées en route vont dans `quizDeadRef`.
+- Lancement du quiz : ❓ ouvre d'abord un popup de vivier — « Toutes » ou
+  « Les moins connues » avec un seuil d'étoiles (`quizScope`, `quizMax` ;
+  note ≤ seuil, une chanson non notée compte pour 0 donc toujours dedans).
+  Le vivier retenu est **figé en ids** dans `quizPoolRef` au démarrage :
+  répondre juste fait monter le score, mais la chanson ne doit pas quitter
+  la partie en cours de route. Choix gardé en état (non persisté) : pas de
+  nouveau champ dans `carnet:v4`, donc pas de signature de sauvegarde touchée.
+- Fin de quiz : le popup de score porte un dépliant « Détail » — une ligne
+  par chanson jouée, `avant → après` (vert si le score monte, rouge s'il
+  descend, « — » si la chanson n'était pas notée) et le nombre de bonnes
+  réponses. Alimenté par `quizStatsRef` (id → ligne), où `avant` est le
+  score au **premier** passage de la chanson : tirée deux fois, elle ne
+  raconte qu'un seul mouvement. `applyAuto` renvoie `{ before, after }`
+  pour cela.
 - Fin de session : popup de **score** (informatif, ajustement possible),
   une seule apparition par session (`memoPromptedRef`, réarmé par
   `startRevise`), seulement si `judged > 0`, jamais en quiz.
