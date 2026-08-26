@@ -624,6 +624,10 @@ function normalizeLibrary(data) {
         memo: clampMemo(Number(s.memo)),
         ...(s.memoAuto === true ? { memoAuto: true } : {}),
       } : {}),
+      // Appariement Apple Music : présent seulement s'il est complet et
+      // vraisemblable (amNorm) — il arrive par la sauvegarde en fichier,
+      // l'URL de partage ne le transporte pas.
+      ...(amNorm(s.am) ? { am: amNorm(s.am) } : {}),
     }));
   if (!songs.length) throw new Error("aucune grille exploitable");
   const lib = { songs };
@@ -639,7 +643,10 @@ async function encodeShare(library) {
     throw new Error("CompressionStream indisponible dans ce navigateur");
   }
   const json = JSON.stringify({
-    songs: library.songs.map(({ id, ...rest }) => rest),
+    // Les liens Apple Music (am) restent hors de l'URL, comme les tags et
+    // les listes : ils voyagent par la sauvegarde en fichier, et l'URL de
+    // partage reste courte.
+    songs: library.songs.map(({ id, am, ...rest }) => rest),
     showChords: library.showChords,
     size: library.size,
     speed: library.speed,
@@ -858,6 +865,156 @@ const mergeByTitle = (prev, added) => {
   const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
   return [...prev.filter((s) => !added.some((a) => norm(a.title) === norm(s.title))), ...added];
 };
+
+/* ------------------------------------------------------------------ */
+/* Apple Music — recherche iTunes publique (sans compte ni clé), à     */
+/* partir de titre + artiste. Le résultat est mémorisé une fois pour   */
+/* toutes dans la chanson (champ am : appariement, ou { none:true }    */
+/* quand rien de convaincant n'existe) — jamais de recherche à         */
+/* l'affichage, l'API est limitée à ~20 requêtes/minute.               */
+/* ------------------------------------------------------------------ */
+
+/** Repli pour comparer nos titres aux réponses iTunes : accents
+ *  translittérés (é → e), casse et ponctuation ignorées — contrairement
+ *  à normPart, qui supprime purement les caractères accentués. */
+const fold = (s) => String(s || "").toLowerCase()
+  .normalize("NFD").replace(/\p{Diacritic}/gu, "")
+  .replace(/&/g, " and ")
+  .replace(/[^a-z0-9]+/g, " ")
+  .trim();
+/** Décorations d'édition retirées avant repli : « Hey Jude (Remastered
+ *  2015) », « Hey Jude - Live » et « Hey Jude feat. X » comparent tous
+ *  comme « hey jude ». */
+const stripDecorRaw = (t) => String(t || "")
+  .replace(/\([^)]*\)|\[[^\]]*\]/g, " ")
+  .replace(/\s+[-–—]\s+.*$/, " ")
+  .replace(/\b(feat|featuring|ft)\.?\s.*$/i, " ");
+const foldLoose = (t) => fold(stripDecorRaw(t));
+/** Mot ou expression entière dans une chaîne foldée — includes nu prendrait
+ *  « cover » dans « discovery ». */
+const hasWord = (hay, w) => (" " + hay + " ").includes(" " + w + " ");
+
+const AM_SEARCH = "https://itunes.apple.com/search?media=music&entity=song&country=FR&limit=10&term=";
+const amSearchUrl = (title, artist) =>
+  AM_SEARCH + encodeURIComponent(`${stripDecorRaw(title)} ${artist || ""}`.replace(/\s+/g, " ").trim());
+
+/** Repli JSONP officiel de l'API (paramètre callback=) : même mécanique
+ *  que loadScript, avec callback global nommé, délai et nettoyage. */
+function amJsonp(url, ms = 10000) {
+  return new Promise((resolve, reject) => {
+    const cb = "amcb" + Math.random().toString(36).slice(2);
+    const el = document.createElement("script");
+    let timer;
+    const done = () => { clearTimeout(timer); delete window[cb]; el.remove(); };
+    timer = setTimeout(() => { done(); reject(new Error("délai iTunes dépassé")); }, ms);
+    window[cb] = (d) => { done(); resolve(d && Array.isArray(d.results) ? d.results : []); };
+    el.onerror = () => { done(); reject(new Error("iTunes inaccessible")); };
+    el.src = url + "&callback=" + cb;
+    document.head.appendChild(el);
+  });
+}
+
+/** fetch direct (l'API répond Access-Control-Allow-Origin: *), JSONP en
+ *  secours. Hors ligne les deux rejettent : l'appelant n'enregistre rien. */
+async function searchItunes(title, artist) {
+  const url = amSearchUrl(title, artist);
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) throw new Error(`iTunes HTTP ${res.status}`);
+    const d = await res.json();
+    return Array.isArray(d.results) ? d.results : [];
+  } catch {
+    return amJsonp(url);
+  }
+}
+
+/* Versions parasites : disqualifiantes (−40) quand le mot apparaît chez le
+   candidat (titre ou album) sans figurer dans notre propre titre. Les
+   mentions d'édition (remaster…) ne coûtent presque rien (−3), et rien du
+   tout quand titre et artiste correspondent déjà : un remaster officiel
+   est une version acceptable. */
+const AM_BAD = ["live", "karaoke", "tribute", "cover", "covers", "remix", "remixes",
+  "instrumental", "medley", "acoustic", "demo", "originally performed", "in the style of", "made famous"];
+const AM_SOFT = ["remaster", "remastered", "single version", "radio edit", "mono", "stereo", "deluxe"];
+const AM_AUTO = 85; // au moins : enregistrement automatique
+const AM_MAYBE = 55; // en dessous : aucun candidat convaincant
+
+/** Jaccard sur les mots foldés, 0..1. */
+const wordOverlap = (a, b) => {
+  const A = new Set(a.split(" ").filter(Boolean)), B = new Set(b.split(" ").filter(Boolean));
+  if (!A.size || !B.size) return 0;
+  let n = 0; for (const w of A) if (B.has(w)) n++;
+  return n / (A.size + B.size - n);
+};
+
+/** Score d'un résultat iTunes contre notre titre/artiste. Exact + exact
+ *  = 90 ; quasi exact (décorations près) + artiste exact = 85 → auto ;
+ *  titre exact + artiste proche = 78 → choix manuel ; artiste différent
+ *  = rejet (−35) sauf validation manuelle. */
+function scoreMatch(r, title, artist) {
+  const tL = fold(title), tLl = foldLoose(title);
+  const tR = fold(r.trackName), tRl = foldLoose(r.trackName);
+  const aL = fold(artist), aR = fold(r.artistName);
+  let tScore;
+  if (tL && tR === tL) tScore = 50;
+  else if (tLl && tRl === tLl) tScore = 45;
+  else if (tLl && tRl && (tRl.startsWith(tLl) || tLl.startsWith(tRl))) tScore = 25;
+  else tScore = Math.round(20 * wordOverlap(tRl, tLl));
+  let aScore;
+  if (aL && aR === aL) aScore = 40;
+  else if (aL && aR && (aR.includes(aL) || aL.includes(aR))) aScore = 28; // feat., « & His Orchestra »
+  else if (wordOverlap(aR, aL) >= 0.5) aScore = 12;
+  else aScore = -35;
+  let s = tScore + aScore;
+  const hay = fold(`${r.trackName} ${r.collectionName || ""}`);
+  for (const w of AM_BAD) if (hasWord(hay, w) && !hasWord(tL, w)) s -= 40;
+  if (!(tScore >= 45 && aScore === 40)) {
+    for (const w of AM_SOFT) if (hasWord(hay, w) && !hasWord(tL, w)) s -= 3;
+  }
+  return s;
+}
+
+/** Classement des candidats : « auto » (enregistrer sans rien demander),
+ *  « pick » (faire choisir), « none » (rien de convaincant). top — les
+ *  3 meilleurs plausibles — est toujours rendu, pour « Changer ». */
+function classifyAm(results, title, artist) {
+  const scored = (results || []).map((r) => ({ r, s: scoreMatch(r, title, artist) }))
+    .sort((a, b) => b.s - a.s);
+  const top = scored.slice(0, 3).filter((x) => x.s >= 25).map((x) => x.r);
+  const best = scored[0];
+  if (!best || best.s < AM_MAYBE) return { kind: "none", top };
+  if (best.s >= AM_AUTO) return { kind: "auto", best: best.r, top };
+  return { kind: "pick", top };
+}
+
+/** Le trackId sert d'identifiant stable, trackViewUrl de lien principal
+ *  (HTTPS music.apple.com : iOS ouvre l'app, le web sert de repli). */
+const amFieldsFrom = (r) => ({
+  id: r.trackId, url: r.trackViewUrl,
+  title: r.trackName, artist: r.artistName, album: r.collectionName || "",
+});
+
+/** Champ am venu d'un import : soit le marqueur « non trouvé », soit un
+ *  appariement complet pointant chez Apple — sinon abandonné (null).
+ *  Les ids sont des trackId Apple, pas des ids locaux : pas de
+ *  régénération au transfert. */
+function amNorm(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  if (raw.none === true) return { none: true };
+  if (!Number(raw.id) || typeof raw.url !== "string"
+    || !/^https:\/\/(music|itunes|geo\.music)\.apple\.com\//.test(raw.url)) return null;
+  return {
+    id: Number(raw.id), url: raw.url.slice(0, 400),
+    title: String(raw.title || "").slice(0, 200),
+    artist: String(raw.artist || "").slice(0, 200),
+    album: String(raw.album || "").slice(0, 200),
+  };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Score d'apprentissage : une décimale au plus, virgule française. */
 const fmtMemo = (m) => (Math.round(Number(m) * 10) / 10).toFixed(1).replace(/\.0$/, "").replace(".", ",");
@@ -1158,6 +1315,19 @@ const CSS = `
 .qdd b { font-weight:700; margin-left:4px; color:var(--ink); }
 .qdd b.up { color:var(--ok); }
 .qdd b.dn { color:var(--hot); }
+/* Apple Music : boutons 🍎. Le lien de carte reprend le gabarit de .carddel ;
+   les classes .iconbtn/.btn sont pensées pour <button>, une ancre a besoin
+   du reset texte. */
+a.iconbtn, a.btn { text-decoration:none; }
+a.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; color:var(--ink); }
+.cardam { flex:0 0 auto; display:grid; place-items:center; padding:0 12px; font-size:15px;
+  border-left:1px solid var(--line); }
+.cardam:hover { background:var(--acc-soft); }
+.amcell { display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }
+.amnone { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+.amlist { width:100%; }
+.amchoice { width:100%; text-align:left; border-radius:8px; }
+.amchoice:hover { background:var(--acc-soft); }
 @media (min-width:720px) { .sheet { padding:26px 32px calc(130px + var(--sab)); }
   .lib { padding:18px 32px calc(32px + var(--sab)); }
   .flowdiag svg { width:min(44vh, 380px); }
@@ -1784,6 +1954,11 @@ export default function Carnet() {
   const quizPoolRef = useRef(null); // ids figés au départ de la partie (null = toute la sous-liste affichée)
   const quizStatsRef = useRef(new Map()); // id → { title, artist, before, after, asked, correct } de la partie
   const [backup, setBackup] = useState(null); // { at, sig } de la dernière sauvegarde en fichier
+  const [amPick, setAmPick] = useState(null); // null | { songId, results } — choix manuel de la piste Apple Music
+  const [amBusyId, setAmBusyId] = useState(null); // recherche Apple Music unitaire en cours (id de chanson)
+  const [amErr, setAmErr] = useState(null); // { id, msg } — échec de la dernière recherche unitaire
+  const [amScan, setAmScan] = useState(null); // null | { done, total, found, ambiguous, missed, running, error? }
+  const amStopRef = useRef(false); // demande d'arrêt du scan Apple Music global
   const sheetRef = useRef(null);
   const fileRef = useRef(null);
   const syncHashRef = useRef(false);
@@ -2215,9 +2390,17 @@ export default function Carnet() {
     const title = draft.title.trim() || "Sans titre";
     if (current) {
       const renamed = { title, artist: draft.artist.trim() };
+      // Titre ou artiste réellement changés (même critère que les ancres de
+      // tags et de listes) : l'appariement Apple Music ne vaut plus — y
+      // compris un « non trouvé », la nouvelle orthographe mérite sa chance.
+      const moved = songKey(current) !== songKey(renamed);
       moveTags(songKey(current), songKey(renamed));
       moveLists(songKey(current), songKey(renamed));
-      setSongs(songs.map((s) => (s.id === current.id ? { ...s, ...renamed, body: draft.body } : s)));
+      setSongs(songs.map((s) => {
+        if (s.id !== current.id) return s;
+        const { am, ...rest } = s;
+        return { ...(moved ? rest : s), ...renamed, body: draft.body };
+      }));
     } else {
       const song = { id: uid(), title, artist: draft.artist.trim(), body: draft.body, steps: 0 };
       setSongs([...songs, song]); setCurrentId(song.id);
@@ -2412,9 +2595,57 @@ export default function Carnet() {
     return { ...rest, memo: n };
   }));
 
+  /* Apple Music. Jamais de recherche à l'affichage : uniquement sur un
+     geste (menu de la chanson, scan des Réglages). setAm passe par la
+     forme fonctionnelle — le scan global continue pendant que
+     l'utilisateur navigue ou édite. */
+  const setAm = (songId, am) => setSongs((prev) => prev.map((s) => {
+    if (s.id !== songId) return s;
+    if (!am) { const { am: dropped, ...rest } = s; return rest; }
+    return { ...s, am };
+  }));
+  const amSearchOne = async (song, { pickAlways = false } = {}) => {
+    setAmBusyId(song.id); setAmErr(null);
+    try {
+      const c = classifyAm(await searchItunes(song.title, song.artist), song.title, song.artist);
+      if (c.kind === "auto" && !pickAlways) setAm(song.id, amFieldsFrom(c.best));
+      else if (c.top.length) setAmPick({ songId: song.id, results: c.top });
+      else if (pickAlways) setAmErr({ id: song.id, msg: "Rien d'autre de crédible" }); // on garde le lien actuel
+      else setAm(song.id, { none: true });
+    } catch (e) {
+      setAmErr({ id: song.id, msg: "Réseau indisponible" });
+    } finally { setAmBusyId(null); }
+  };
+  const amScanAll = async () => {
+    const targets = songs.filter((s) => !s.am); // figé au départ : les ambigus restent à retenter
+    if (!targets.length || (amScan && amScan.running)) return;
+    amStopRef.current = false;
+    setAmScan({ done: 0, total: targets.length, found: 0, ambiguous: 0, missed: 0, running: true });
+    const bump = (k) => setAmScan((p) => p && { ...p, [k]: p[k] + 1 });
+    for (let i = 0; i < targets.length; i++) {
+      if (amStopRef.current) break;
+      const s = targets[i];
+      try {
+        const c = classifyAm(await searchItunes(s.title, s.artist), s.title, s.artist);
+        if (c.kind === "auto") { setAm(s.id, amFieldsFrom(c.best)); bump("found"); }
+        else if (c.kind === "pick") bump("ambiguous"); // rien d'enregistré : à régler depuis la chanson
+        else { setAm(s.id, { none: true }); bump("missed"); }
+      } catch (e) {
+        setAmScan((p) => p && { ...p, running: false, error: "réseau indisponible" });
+        return;
+      }
+      bump("done");
+      if (i < targets.length - 1) await sleep(3500); // ~17 requêtes/minute, sous la limite Apple (~20)
+    }
+    setAmScan((p) => p && { ...p, running: false });
+  };
+
   const engine = CS ? "ChordSheetJS 15.6" : csTried ? "lecteur interne (librairie inaccessible)" : "chargement…";
   const mo = (n) => (n / 1048576).toFixed(1).replace(".", ",") + " Mo";
   const cached = offline && offline.vendor && offline.vendor.total > 0 && offline.vendor.done >= offline.vendor.total;
+  // Réseau : offline est null dans un aperçu d'artefact — considéré en ligne.
+  const online = !offline || offline.online !== false;
+  const amMissing = songs.filter((s) => !s.am).length;
   const offlineHint = !offline || !offline.supported
     ? "Indisponible ici : garder l'application en cache demande un service worker, donc une page servie en HTTPS — c'est le cas sur GitHub Pages, pas dans un aperçu d'artefact."
     : !offline.shell
@@ -2452,6 +2683,10 @@ export default function Carnet() {
           <>
             <button className="iconbtn" title="Retour" onClick={() => { setScrolling(false); if (quiz) stopQuiz(); else setView("lib"); }}>‹</button>
             <div className="spacer" />
+            {current.am && current.am.url && (
+              <a className="iconbtn" href={current.am.url} target="_blank" rel="noopener noreferrer"
+                title={`Écouter sur Apple Music — ${current.am.title}`}>🍎</a>
+            )}
             {songs.length > 1 && (
               <button className="iconbtn" title="Une autre au hasard — les mieux connues sortent plus souvent" onClick={openRandom}>🎲</button>
             )}
@@ -2615,6 +2850,10 @@ export default function Carnet() {
                     </span>
                   )}
                 </button>
+                {s.am && s.am.url && (
+                  <a className="cardam" href={s.am.url} target="_blank" rel="noopener noreferrer"
+                    title={`Écouter sur Apple Music — ${s.am.title}`}>🍎</a>
+                )}
               </div>
               );
             })}
@@ -2714,6 +2953,38 @@ export default function Carnet() {
                   </div>
                 </div>
               )}
+              <div className="mrow">
+                <span className="mlab">Apple Music</span>
+                <div className="amcell">
+                  {amErr && amErr.id === current.id && <span className="amnone">{amErr.msg}</span>}
+                  {current.am && current.am.url ? (
+                    <>
+                      <a className="btn slim" href={current.am.url} target="_blank" rel="noopener noreferrer"
+                        title={`${current.am.title} — ${current.am.artist}${current.am.album ? ` (${current.am.album})` : ""}`}>🍎 Ouvrir</a>
+                      <button className="btn slim ghost" disabled={!online || amBusyId === current.id}
+                        title={online ? "Choisir une autre version parmi les meilleurs résultats" : "Hors ligne"}
+                        onClick={() => amSearchOne(current, { pickAlways: true })}>
+                        {amBusyId === current.id ? "…" : "Changer"}
+                      </button>
+                    </>
+                  ) : current.am && current.am.none ? (
+                    <>
+                      {!(amErr && amErr.id === current.id) && <span className="amnone">Non trouvé</span>}
+                      <button className="btn slim ghost" disabled={!online || amBusyId === current.id}
+                        title={online ? "Relancer la recherche" : "Hors ligne"}
+                        onClick={() => amSearchOne(current)}>
+                        {amBusyId === current.id ? "Recherche…" : "Réessayer"}
+                      </button>
+                    </>
+                  ) : (
+                    <button className="btn slim" disabled={!online || amBusyId === current.id}
+                      title={online ? "Chercher cette chanson sur Apple Music" : "Hors ligne"}
+                      onClick={() => amSearchOne(current)}>
+                      {amBusyId === current.id ? "Recherche…" : "🍎 Rechercher"}
+                    </button>
+                  )}
+                </div>
+              </div>
               <div className="mact">
                 <button className="btn slim" onClick={startEdit}>✎ Modifier</button>
                 <button className="btn slim danger" onClick={remove}>Supprimer</button>
@@ -2886,6 +3157,37 @@ export default function Carnet() {
               </div>
             </div>
           )}
+          {amPick && (
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Choisir la piste Apple Music"
+              onClick={(e) => { if (e.target === e.currentTarget) setAmPick(null); }}>
+              <div className="modalbox">
+                <div className="modalicon">🍎</div>
+                <h2>Apple Music</h2>
+                <p>Plusieurs pistes ressemblent — laquelle est la bonne ?</p>
+                <div className="qdlist amlist">
+                  {amPick.results.map((r) => (
+                    <button className="qdrow amchoice" key={r.trackId}
+                      onClick={() => { setAm(amPick.songId, amFieldsFrom(r)); setAmPick(null); }}>
+                      <div className="qdt">
+                        <b>{r.trackName}</b>
+                        <i>{r.artistName}{r.collectionName ? ` — ${r.collectionName}` : ""}</i>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <div className="actions" style={{ justifyContent: "center" }}>
+                  {current.am && current.am.url ? (
+                    <button className="btn ghost" title="Aucune de ces pistes : oublier le lien actuel"
+                      onClick={() => { setAm(amPick.songId, null); setAmPick(null); }}>Retirer le lien</button>
+                  ) : (
+                    <button className="btn ghost" title="Aucune de ces pistes n'est la bonne"
+                      onClick={() => { setAm(amPick.songId, { none: true }); setAmPick(null); }}>Aucun de ceux-ci</button>
+                  )}
+                  <button className="btn" onClick={() => setAmPick(null)}>Annuler</button>
+                </div>
+              </div>
+            </div>
+          )}
           {flowIndex != null && events.length > 0 && (
             <ChordFlow events={events} index={Math.min(flowIndex, events.length - 1)}
               setIndex={setFlowIndex} instrument={instrument} setInstrument={setInstrument}
@@ -3008,6 +3310,39 @@ export default function Carnet() {
             <div className="actions">
               <button className="btn" onClick={createList}>Ajouter une liste</button>
             </div>
+            <div className="field">
+              <label>Apple Music</label>
+              <p className="hint">
+                Associe chaque chanson à sa piste Apple Music (recherche iTunes publique,
+                sans compte). Seules les correspondances sûres sont enregistrées ; les cas
+                ambigus se règlent depuis le menu de chaque chanson. Environ 3,5 s par
+                chanson — la limite du service. Les liens suivent le carnet dans la
+                sauvegarde en fichier (pas dans l'URL de partage).
+              </p>
+            </div>
+            <div className="actions">
+              {amScan && amScan.running ? (
+                <>
+                  <span className="tag">{amScan.done} / {amScan.total}</span>
+                  <button className="btn danger" onClick={() => { amStopRef.current = true; }}>Stop</button>
+                </>
+              ) : (
+                <button className="btn" disabled={!online || !amMissing}
+                  title={online ? "Chercher un lien pour chaque chanson qui n'en a pas encore" : "Hors ligne"}
+                  onClick={amScanAll}>
+                  Rechercher les liens manquants{amMissing ? ` (${amMissing})` : ""}
+                </button>
+              )}
+            </div>
+            {amScan && !amScan.running && (
+              <div className="field">
+                <p className="hint">
+                  {amScan.error
+                    ? `Interrompu (${amScan.error}) après ${amScan.done} chanson${amScan.done > 1 ? "s" : ""} examinée${amScan.done > 1 ? "s" : ""}.`
+                    : `${amScan.done} chanson${amScan.done > 1 ? "s" : ""} examinée${amScan.done > 1 ? "s" : ""} : ${amScan.found} lien${amScan.found > 1 ? "s" : ""} trouvé${amScan.found > 1 ? "s" : ""}, ${amScan.ambiguous} à choisir depuis la chanson, ${amScan.missed} introuvable${amScan.missed > 1 ? "s" : ""}.`}
+                </p>
+              </div>
+            )}
             <div className="field">
               <label>Stockage</label>
               <p className="hint">
