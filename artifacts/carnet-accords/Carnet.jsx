@@ -900,7 +900,7 @@ const amSearchUrl = (title, artist) =>
 
 /** Repli JSONP officiel de l'API (paramètre callback=) : même mécanique
  *  que loadScript, avec callback global nommé, délai et nettoyage. */
-function amJsonp(url, ms = 10000) {
+function amJsonp(url, ms = 8000) {
   return new Promise((resolve, reject) => {
     const cb = "amcb" + Math.random().toString(36).slice(2);
     const el = document.createElement("script");
@@ -914,21 +914,39 @@ function amJsonp(url, ms = 10000) {
   });
 }
 
-/** fetch direct (l'API répond Access-Control-Allow-Origin: *), JSONP en
- *  secours. Hors ligne les deux rejettent : l'appelant n'enregistre rien. */
-async function searchItunes(title, artist) {
-  const url = amSearchUrl(title, artist);
+/** GET JSON avec délai — les miroirs publics peuvent être lents. */
+async function amFetch(url, ms = 8000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 8000);
     const res = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(t);
-    if (!res.ok) throw new Error(`iTunes HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = await res.json();
-    return Array.isArray(d.results) ? d.results : [];
-  } catch {
-    return amJsonp(url);
+    if (!d || !Array.isArray(d.results)) throw new Error("réponse inattendue");
+    return d.results;
+  } finally { clearTimeout(t); }
+}
+
+/** L'appel direct répond Access-Control-Allow-Origin: * … mais depuis un
+ *  iPhone, Apple redirige /search vers le schéma natif musics:// (que
+ *  Safari ne peut pas suivre) et refuse aussi le JSONP — vérifié : la
+ *  cible d'usage principale de l'app échoue en direct. D'où la chaîne de
+ *  replis : fetch, JSONP, puis des miroirs CORS publics qui relaient la
+ *  même API sans toucher aux données. Échec total → erreur explicite,
+ *  l'appelant n'enregistre rien (jamais de « non trouvé » sur panne). */
+async function searchItunes(title, artist) {
+  if (navigator.onLine === false) throw new Error("hors ligne");
+  const url = amSearchUrl(title, artist);
+  const attempts = [
+    () => amFetch(url),
+    () => amJsonp(url),
+    () => amFetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(url), 12000),
+    () => amFetch("https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(url), 12000),
+  ];
+  for (const attempt of attempts) {
+    try { return await attempt(); } catch { /* voie suivante */ }
   }
+  throw new Error("service injoignable");
 }
 
 /* Versions parasites : disqualifiantes (−40) quand le mot apparaît chez le
@@ -1013,6 +1031,13 @@ function amNorm(raw) {
     album: String(raw.album || "").slice(0, 200),
   };
 }
+
+/** Lien d'ouverture : la piste appariée quand elle existe, sinon la
+ *  recherche Apple Music pré-remplie — aucune API, disponible même quand
+ *  le service refuse nos recherches. */
+const amLink = (s) => (s.am && s.am.url)
+  ? s.am.url
+  : "https://music.apple.com/fr/search?term=" + encodeURIComponent(`${s.title} ${s.artist || ""}`.trim());
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -2613,7 +2638,7 @@ export default function Carnet() {
       else if (pickAlways) setAmErr({ id: song.id, msg: "Rien d'autre de crédible" }); // on garde le lien actuel
       else setAm(song.id, { none: true });
     } catch (e) {
-      setAmErr({ id: song.id, msg: "Réseau indisponible" });
+      setAmErr({ id: song.id, msg: e && e.message === "hors ligne" ? "Hors ligne" : "Service injoignable" });
     } finally { setAmBusyId(null); }
   };
   const amScanAll = async () => {
@@ -2631,7 +2656,7 @@ export default function Carnet() {
         else if (c.kind === "pick") bump("ambiguous"); // rien d'enregistré : à régler depuis la chanson
         else { setAm(s.id, { none: true }); bump("missed"); }
       } catch (e) {
-        setAmScan((p) => p && { ...p, running: false, error: "réseau indisponible" });
+        setAmScan((p) => p && { ...p, running: false, error: String((e && e.message) || e).slice(0, 80) });
         return;
       }
       bump("done");
@@ -2683,10 +2708,10 @@ export default function Carnet() {
           <>
             <button className="iconbtn" title="Retour" onClick={() => { setScrolling(false); if (quiz) stopQuiz(); else setView("lib"); }}>‹</button>
             <div className="spacer" />
-            {current.am && current.am.url && (
-              <a className="iconbtn" href={current.am.url} target="_blank" rel="noopener noreferrer"
-                title={`Écouter sur Apple Music — ${current.am.title}`}>🍎</a>
-            )}
+            <a className="iconbtn" href={amLink(current)} target="_blank" rel="noopener noreferrer"
+              title={current.am && current.am.url
+                ? `Écouter sur Apple Music — ${current.am.title}`
+                : "Chercher cette chanson dans Apple Music"}>🍎</a>
             {songs.length > 1 && (
               <button className="iconbtn" title="Une autre au hasard — les mieux connues sortent plus souvent" onClick={openRandom}>🎲</button>
             )}
