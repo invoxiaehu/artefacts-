@@ -1539,9 +1539,10 @@ const CSS = `
 .qdd b { font-weight:700; margin-left:4px; color:var(--ink); }
 .qdd b.up { color:var(--ok); }
 .qdd b.dn { color:var(--hot); }
-/* Apple Music : boutons 🍎. Le lien de carte reprend le gabarit de .carddel ;
-   les classes .iconbtn/.btn sont pensées pour <button>, une ancre a besoin
-   du reset texte. */
+/* Apple Music : triangle de lecture rouge foncé (AmIcon). Le lien de carte
+   reprend le gabarit de .carddel ; les classes .iconbtn/.btn sont pensées
+   pour <button>, une ancre a besoin du reset texte. */
+.amico { width:1em; height:1em; fill:var(--hot); display:inline-block; vertical-align:-0.12em; }
 a.iconbtn, a.btn { text-decoration:none; }
 a.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; color:var(--ink); }
 .cardam { flex:0 0 auto; display:grid; place-items:center; padding:0 12px; font-size:15px;
@@ -1562,6 +1563,16 @@ a.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px
 `;
 
 /* ------------------------------------------------------------------ */
+
+/** Triangle « lecture » plein, rouge foncé — l'icône Apple Music partout
+ *  (l'emoji pomme jurait avec la palette). 1em : suit la taille du texte. */
+function AmIcon() {
+  return (
+    <svg className="amico" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path d="M4.5 2.7v10.6c0 .5.55.8.97.53l8.3-5.3a.63.63 0 0 0 0-1.06l-8.3-5.3a.63.63 0 0 0-.97.53z" />
+    </svg>
+  );
+}
 
 function VU() {
   const h = [5, 9, 6, 13, 8, 16, 11, 7];
@@ -2964,7 +2975,7 @@ export default function Carnet() {
             <a className="iconbtn" href={amLink(current)} target="_blank" rel="noopener noreferrer"
               title={current.am && current.am.url
                 ? `Écouter sur Apple Music — ${current.am.title}`
-                : "Chercher cette chanson dans Apple Music"}>🍎</a>
+                : "Chercher cette chanson dans Apple Music"}><AmIcon /></a>
             {songs.length > 1 && (
               <button className="iconbtn" title="Une autre au hasard dans le même vivier — les mieux connues sortent plus souvent" onClick={openRandom}>🎹</button>
             )}
@@ -3158,7 +3169,7 @@ export default function Carnet() {
                 </button>
                 {s.am && s.am.url && (
                   <a className="cardam" href={s.am.url} target="_blank" rel="noopener noreferrer"
-                    title={`Écouter sur Apple Music — ${s.am.title}`}>🍎</a>
+                    title={`Écouter sur Apple Music — ${s.am.title}`}><AmIcon /></a>
                 )}
               </div>
               );
@@ -3325,7 +3336,7 @@ export default function Carnet() {
                   {current.am && current.am.url ? (
                     <>
                       <a className="btn slim" href={current.am.url} target="_blank" rel="noopener noreferrer"
-                        title={`${current.am.title} — ${current.am.artist}${current.am.album ? ` (${current.am.album})` : ""}`}>🍎 Ouvrir</a>
+                        title={`${current.am.title} — ${current.am.artist}${current.am.album ? ` (${current.am.album})` : ""}`}><AmIcon /> Ouvrir</a>
                       <button className="btn slim ghost" disabled={!online || amBusyId === current.id}
                         title={online ? "Choisir une autre version parmi les meilleurs résultats" : "Hors ligne"}
                         onClick={() => amSearchOne(current, { pickAlways: true })}>
@@ -3345,7 +3356,7 @@ export default function Carnet() {
                     <button className="btn slim" disabled={!online || amBusyId === current.id}
                       title={online ? "Chercher cette chanson sur Apple Music" : "Hors ligne"}
                       onClick={() => amSearchOne(current)}>
-                      {amBusyId === current.id ? "Recherche…" : "🍎 Rechercher"}
+                      {amBusyId === current.id ? "Recherche…" : <><AmIcon /> Rechercher</>}
                     </button>
                   )}
                 </div>
@@ -3526,7 +3537,7 @@ export default function Carnet() {
             <div className="modal" role="dialog" aria-modal="true" aria-label="Choisir la piste Apple Music"
               onClick={(e) => { if (e.target === e.currentTarget) setAmPick(null); }}>
               <div className="modalbox">
-                <div className="modalicon">🍎</div>
+                <div className="modalicon"><AmIcon /></div>
                 <h2>Apple Music</h2>
                 <p>Plusieurs pistes ressemblent — laquelle est la bonne ?</p>
                 <div className="qdlist amlist">
