@@ -160,7 +160,7 @@ function extractionStats(text) {
 }
 
 function namesFromFile(filename) {
-  const base = filename.replace(/\.pdf$/i, "").replace(/_/g, " ");
+  const base = filename.replace(/\.(pdf|pro|chopro|chordpro|cho|crd)$/i, "").replace(/_/g, " ");
   const parts = base.split(/\s+-\s+/).map((s) => s.trim()).filter(Boolean);
   const clean = parts.filter((p) => !/^(chords?|tabs?|lyrics?|accords?|paroles?)$/i.test(p));
   if (clean.length >= 2) return { artist: clean[0], title: clean.slice(1).join(" – ") };
@@ -234,6 +234,62 @@ function toChordPro(text) {
     }
   }
   return out.join("\n");
+}
+
+/* ------------------------------------------------------------------ */
+/* Import ChordPro (.pro) : l'inverse de toChordPro — les accords       */
+/* inline [X] redeviennent une ligne d'accords au-dessus des paroles,   */
+/* le format canonique du carnet (corps éditable, mêmes deux parseurs). */
+/* Directives interprétées : title/subtitle/artist, {c: …} → section,   */
+/* {soc}/{sov}/{sob} → section implicite si aucun {c: …} ne la nomme,   */
+/* {sot}…{eot} → lignes gardées telles quelles (tablature). Le reste    */
+/* est ignoré sans bruit — la transposition de l'app remplace {capo}.   */
+/* ------------------------------------------------------------------ */
+
+const CP_SECTIONS = { soc: "Chorus", sov: "Verse", sob: "Bridge", start_of_chorus: "Chorus", start_of_verse: "Verse", start_of_bridge: "Bridge" };
+function chordProToBody(raw) {
+  const lines = String(raw || "").replace(/\r\n?/g, "\n").split("\n");
+  const out = [];
+  let title = "", artist = "", pending = null, inTab = false;
+  for (const line of lines) {
+    const d = /^\s*\{\s*([\w-]+)\s*(?::([^}]*))?\}\s*$/.exec(line);
+    if (d) {
+      const name = d[1].toLowerCase();
+      const val = (d[2] || "").trim();
+      if (name === "title" || name === "t") title = val || title;
+      else if (name === "subtitle" || name === "st" || name === "artist") artist = artist || val;
+      else if ((name === "comment" || name === "c" || name === "ci") && val) { out.push(`[${val}]`); pending = null; }
+      else if (CP_SECTIONS[name]) pending = val || CP_SECTIONS[name];
+      else if (name === "sot" || name === "start_of_tab") inTab = true;
+      else if (name === "eot" || name === "end_of_tab") inTab = false;
+      continue;
+    }
+    if (!line.trim()) { out.push(""); continue; }
+    // La section d'un {soc} sans {c: …} : posée devant sa première ligne.
+    if (pending) { out.push(`[${pending}]`); pending = null; }
+    if (inTab) { out.push(line); continue; }
+    const marks = [];
+    let lyr = "", last = 0, m;
+    const re = /\[([^\]]*)\]/g;
+    while ((m = re.exec(line))) {
+      lyr += line.slice(last, m.index);
+      if (m[1].trim()) marks.push({ chord: m[1].trim(), at: lyr.length });
+      last = m.index + m[0].length;
+    }
+    lyr += line.slice(last);
+    if (!marks.length) { out.push(lyr); continue; }
+    let cl = "";
+    for (const mk of marks) {
+      const at = Math.max(mk.at, cl ? cl.length + 1 : 0);
+      cl += " ".repeat(at - cl.length) + mk.chord;
+    }
+    // « [Dm][C][Bb][A] x2 » : l'annotation rejoint la ligne d'accords,
+    // sinon elle ferait une seconde ligne d'accords orpheline.
+    if (!lyr.trim()) out.push(cl);
+    else if (isChordLine(lyr)) out.push(cl + " " + lyr.trim());
+    else { out.push(cl); out.push(lyr); }
+  }
+  return { title, artist, body: out.join("\n") };
 }
 
 /* ------------------------------------------------------------------ */
@@ -2523,18 +2579,27 @@ export default function Carnet() {
       dir * (key(a).localeCompare(key(b), "fr") || a.title.localeCompare(b.title, "fr")));
   }, [songs, query, sort, sortDir, tagFilter, tags, activeList, lists]);
 
-  const importPdfs = async (files) => {
+  const importFiles = async (files) => {
     if (!files || !files.length) return;
-    setStatus("Lecture des PDF…");
+    setStatus("Lecture des fichiers…");
     setReport([]);
     const added = [];
     const lines = [];
     for (const file of Array.from(files)) {
       try {
-        const body = await pdfToText(file);
+        const isPro = /\.(pro|chopro|chordpro|cho|crd)$/i.test(file.name);
+        let body, meta = null;
+        if (isPro) {
+          meta = chordProToBody(await file.text());
+          body = meta.body;
+        } else {
+          body = await pdfToText(file);
+        }
         const st = extractionStats(body);
-        if (!st.lines) throw new Error("aucun texte : PDF probablement scanné (image)");
-        const { artist, title } = namesFromFile(file.name);
+        if (!st.lines) throw new Error(isPro ? "fichier vide ou sans contenu ChordPro" : "aucun texte : PDF probablement scanné (image)");
+        const names = namesFromFile(file.name);
+        const title = (meta && meta.title) || names.title;
+        const artist = (meta && meta.artist) || names.artist;
         added.push({ id: uid(), title, artist, body, steps: 0 });
         lines.push({
           name: file.name, ok: true,
@@ -2548,10 +2613,10 @@ export default function Carnet() {
     setReport(lines);
     if (added.length) {
       setSongs((prev) => mergeByTitle(prev, added));
-      setStatus(`${added.length} PDF importé(s).`);
+      setStatus(`${added.length} chanson(s) importée(s).`);
       if (added.length === 1) openSong(added[0].id);
     } else {
-      setStatus("Aucun PDF n'a pu être lu.");
+      setStatus("Aucun fichier n'a pu être lu.");
     }
   };
 
@@ -2874,7 +2939,7 @@ export default function Carnet() {
             <VU />
             {offline && !offline.online && <span className="tag">hors ligne</span>}
             <div className="spacer" />
-            <button className="iconbtn" title="Importer des PDF" onClick={() => fileRef.current?.click()}>⤓</button>
+            <button className="iconbtn" title="Importer des PDF ou des fichiers ChordPro (.pro)" onClick={() => fileRef.current?.click()}>⤓</button>
             <button className="iconbtn" title="Saisir une grille" onClick={startNew}>＋</button>
             <button className={"iconbtn" + (dirty ? " nudge" : "")} onClick={() => setView("transfer")}
               title={dirty ? "Sauvegarde et partage — carnet modifié depuis la dernière sauvegarde" : "Sauvegarde et partage"}>⇅</button>
@@ -2919,9 +2984,9 @@ export default function Carnet() {
   return (
     <div className={"cb" + (theme === "light" ? " light" : "")}>
       <style>{CSS}</style>
-      <input ref={fileRef} type="file" accept="application/pdf,.pdf" multiple
+      <input ref={fileRef} type="file" accept="application/pdf,.pdf,.pro,.chopro,.chordpro,.cho,.crd" multiple
         className="vhide" tabIndex={-1} aria-hidden="true"
-        onChange={(e) => { importPdfs(e.target.files); e.target.value = ""; }} />
+        onChange={(e) => { importFiles(e.target.files); e.target.value = ""; }} />
 
       {view !== "lib" && topbar}
 
@@ -3034,9 +3099,9 @@ export default function Carnet() {
             {ready && songs.length === 0 && (
               <div className="empty">
                 <h2>Carnet vide</h2>
-                <p>Importez vos PDF de grilles : paroles et accords sont extraits<br />et alignés automatiquement.</p>
+                <p>Importez vos grilles en PDF ou en ChordPro (.pro) : paroles et<br />accords sont extraits et alignés automatiquement.</p>
                 <div className="actions" style={{ justifyContent: "center" }}>
-                  <button className="btn primary" onClick={() => fileRef.current?.click()}>Importer des PDF</button>
+                  <button className="btn primary" onClick={() => fileRef.current?.click()}>Importer</button>
                   <button className="btn" onClick={startNew}>Saisir</button>
                 </div>
                 <p className="hint" style={{ marginTop: 14 }}>
