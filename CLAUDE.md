@@ -118,6 +118,16 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   rares dans ⚙. Contrôles contextuels flottants (pilule Vitesse visible
   seulement pendant le défilement).
 - Note affichée « vide » plutôt que zéro quand une chanson n'est pas notée.
+- Glyphes typographiques dans la barre d'emoji : `‹` et `♯` n'occupent qu'un
+  tiers de leur cadratin, on les remonte (`.iconbtn.glyph.back/.sharp`) pour
+  qu'ils pèsent autant que 🎓 ou 🎼 — mesurer, ne pas se fier au `font-size`.
+- Pincement à deux doigts sur la feuille = le réglage global de taille
+  (`size`, 13 → 30), le même que A− / A+ des Réglages ; pilule « Taille »
+  collée en haut de la feuille pendant le geste. Écouteurs **natifs** non
+  passifs (React attache `touchmove` en passif sur la racine, `preventDefault`
+  y serait ignoré), `gesturestart`/`gesturechange` annulés pour l'onglet
+  Safari, `touch-action:pan-x pan-y` sur `.sheet`. Le `maximum-scale=1` de
+  `index.html` coupe déjà le zoom de page sur l'écran d'accueil.
 
 ### Révision et tirages
 

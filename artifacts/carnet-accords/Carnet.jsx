@@ -1269,6 +1269,7 @@ const CSS = `
   --acc-soft:rgba(46,91,215,.10); --acc-faint:rgba(46,91,215,.06); --acc-glow:rgba(46,91,215,.14); }
 .cb.light .btn.primary { color:#FFF; }
 .cb.light .speedfly { background:rgba(255,255,255,.94); box-shadow:0 4px 16px rgba(0,0,0,.18); }
+.cb.light .sizefly span { box-shadow:0 4px 16px rgba(0,0,0,.18); }
 .cb.light .modal { background:rgba(0,0,0,.35); }
 .cb button { font:inherit; color:inherit; background:none; border:none; cursor:pointer; }
 /* Champs de fichier pilotés par un bouton : rendus mais invisibles. Un input en
@@ -1290,6 +1291,13 @@ const CSS = `
 /* Bouton-état de la barre du haut : révision en cours, accords affichés, défilement. */
 .iconbtn.on { color:var(--amber); border-color:var(--amber-dim); background:var(--acc-soft); }
 .iconbtn:disabled { opacity:.4; cursor:default; }
+/* Une barre d'emoji mêlée de glyphes typographiques : ‹ et ♯ n'occupent qu'un
+   tiers de leur cadratin (6 et 8 px de large à 16 px, contre 20 pour 🎓 ou 🎼)
+   et paraissent rapetissés à côté d'eux. On les remonte à la taille où leur
+   tache d'encre pèse autant ; line-height:1 les garde dans les 34 px du bouton. */
+.iconbtn.glyph { line-height:1; }
+.iconbtn.glyph.back { font-size:29px; padding-bottom:3px; }
+.iconbtn.glyph.sharp { font-size:23px; }
 @media (max-width:374px) { .top { gap:8px; } }
 /* Un point ambre : le carnet a changé depuis la dernière sauvegarde en fichier. */
 .iconbtn.nudge { position:relative; }
@@ -1419,7 +1427,9 @@ const CSS = `
 .stepper span { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em; color:var(--muted); padding:0 8px;
   text-transform:uppercase; min-width:70px; text-align:center; }
 .stepper span b { color:var(--ink); font-weight:700; }
-.sheet { flex:1; overflow-y:auto; padding:20px 16px calc(120px + var(--sab)); }
+/* touch-action : les deux pans restent au navigateur, le pincement revient à
+   l'app — c'est lui qui règle la taille du texte, pas le zoom de la page. */
+.sheet { flex:1; overflow-y:auto; touch-action:pan-x pan-y; padding:20px 16px calc(120px + var(--sab)); }
 .sheetinner { max-width:760px; margin:0 auto; }
 .sec { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--amber);
   margin:26px 0 10px; display:flex; align-items:center; gap:10px; }
@@ -1504,6 +1514,17 @@ const CSS = `
 .flowchip:disabled { opacity:.35; cursor:default; }
 .flowchip:hover:not(:disabled) { color:var(--amber); border-color:var(--amber-dim); }
 .flowhint { display:none; }
+/* Taille : n'existe que le temps du pincement à deux doigts. Collée en haut de
+   la feuille — le bas est déjà pris par la vitesse et par la barre de révision,
+   et le titre au-dessus mérite de rester lisible. height:0 : la pilule apparaît
+   et disparaît sans décaler d'un pixel les paroles qu'on est en train de régler. */
+.sizefly { position:sticky; top:0; height:0; z-index:6; display:flex; justify-content:center;
+  pointer-events:none; }
+.sizefly span { transform:translateY(-8px); border:1px solid var(--line); border-radius:10px;
+  background:var(--panel2); box-shadow:0 4px 16px rgba(0,0,0,.45); padding:8px 14px;
+  font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--muted); white-space:nowrap; }
+.sizefly b { color:var(--amber); font-size:12px; margin-left:8px; }
 /* Vitesse : n'existe que pendant le défilement, flotte au-dessus de la feuille. */
 .speedfly { position:absolute; right:12px; bottom:calc(14px + var(--sab)); z-index:4;
   border:1px solid var(--line); border-radius:10px; background:rgba(24,26,31,.94);
@@ -2167,6 +2188,7 @@ export default function Carnet() {
   const memoBeforeRef = useRef(null); // score au départ de la session, pour le popup de fin
   const draggingRef = useRef(false);
   const resumeRef = useRef(null);
+  const [sizeFly, setSizeFly] = useState(false); // pilule de taille, le temps du pincement
   const [status, setStatus] = useState("");
   const [report, setReport] = useState([]);
   // window.offline est posé par main.jsx (service worker) ; absent dans un
@@ -2333,6 +2355,63 @@ export default function Carnet() {
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [scrolling, speed]);
+
+  // Taille courante lisible depuis un écouteur natif, sans le réabonner à
+  // chaque cran : seule la valeur au *début* du geste sert de référence.
+  const sizeRef = useRef(size);
+  useEffect(() => { sizeRef.current = size; }, [size]);
+
+  // Pincement à deux doigts sur la feuille : règle la taille du texte, le même
+  // réglage global que A− / A+ des Réglages (13 → 30). Écouteurs natifs et non
+  // props React : React attache touchmove en passif sur la racine, or il faut
+  // pouvoir couper le zoom de page de Safari pendant le geste. Sur l'écran
+  // d'accueil, maximum-scale=1 l'a déjà coupé ; dans l'onglet, gesturestart
+  // (WebKit) doit être annulé pour que les touchmove continuent d'arriver.
+  useEffect(() => {
+    const el = sheetRef.current;
+    if (view !== "song" || !el) return;
+    const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    let pinch = null, hide = null;
+    const start = (e) => {
+      if (e.touches.length !== 2) return;
+      const d = spread(e.touches);
+      if (d < 24) return; // deux doigts collés : ce n'est pas encore un pincement
+      pinch = { d0: d, base: sizeRef.current };
+      clearTimeout(hide);
+      setSizeFly(true);
+    };
+    const move = (e) => {
+      if (!pinch || e.touches.length !== 2) return;
+      // Ni zoom de page ni défilement de la feuille pendant qu'on règle.
+      if (e.cancelable) e.preventDefault();
+      const next = Math.max(13, Math.min(30, Math.round(pinch.base * (spread(e.touches) / pinch.d0))));
+      // Un rendu par cran, pas un par touchmove : la feuille est longue.
+      if (next !== sizeRef.current) setSize(next);
+    };
+    const end = (e) => {
+      if (!pinch || e.touches.length >= 2) return;
+      pinch = null;
+      clearTimeout(hide);
+      hide = setTimeout(() => setSizeFly(false), 900);
+    };
+    const noZoom = (e) => e.preventDefault();
+    el.addEventListener("touchstart", start, { passive: false });
+    el.addEventListener("touchmove", move, { passive: false });
+    el.addEventListener("touchend", end);
+    el.addEventListener("touchcancel", end);
+    el.addEventListener("gesturestart", noZoom);
+    el.addEventListener("gesturechange", noZoom);
+    return () => {
+      el.removeEventListener("touchstart", start);
+      el.removeEventListener("touchmove", move);
+      el.removeEventListener("touchend", end);
+      el.removeEventListener("touchcancel", end);
+      el.removeEventListener("gesturestart", noZoom);
+      el.removeEventListener("gesturechange", noZoom);
+      clearTimeout(hide);
+      setSizeFly(false);
+    };
+  }, [view]);
 
   const current = songs.find((s) => s.id === currentId) || null;
   const steps = current?.steps || 0;
@@ -2970,7 +3049,7 @@ export default function Carnet() {
           </>
         ) : view === "song" ? (
           <>
-            <button className="iconbtn" title="Retour" onClick={() => { setScrolling(false); if (quiz) stopQuiz(); else setView("lib"); }}>‹</button>
+            <button className="iconbtn glyph back" title="Retour" onClick={() => { setScrolling(false); if (quiz) stopQuiz(); else setView("lib"); }}>‹</button>
             <div className="spacer" />
             <a className="iconbtn" href={amLink(current)} target="_blank" rel="noopener noreferrer"
               title={current.am && current.am.url
@@ -2982,7 +3061,7 @@ export default function Carnet() {
             <button className={"iconbtn" + (reviseMode ? " on" : "")} aria-pressed={!!reviseMode} disabled={!revealables}
               title={quiz ? "Arrêter le quiz" : reviseMode ? "Quitter la révision" : "Réviser — paroles cachées, révélées ligne à ligne"}
               onClick={() => (quiz ? stopQuiz() : reviseMode ? setReviseMode(null) : startRevise("seq"))}>🎓</button>
-            <button className={"iconbtn" + (showChords ? " on" : "")} aria-pressed={showChords}
+            <button className={"iconbtn glyph sharp" + (showChords ? " on" : "")} aria-pressed={showChords}
               title={showChords ? "Masquer les accords" : "Afficher les accords"}
               onClick={() => setShowChords(!showChords)}>♯</button>
             <button className="iconbtn" disabled={!showChords || !events.length}
@@ -2994,7 +3073,7 @@ export default function Carnet() {
           </>
         ) : (
           <>
-            <button className="iconbtn" title="Retour" onClick={() => { setScrolling(false); setView("lib"); }}>‹</button>
+            <button className="iconbtn glyph back" title="Retour" onClick={() => { setScrolling(false); setView("lib"); }}>‹</button>
             <div className="brand" style={{ fontSize: 15, color: "var(--muted)" }}>
               {view === "edit" ? (current ? "Modifier" : "Nouvelle grille") : view === "transfer" ? "Transfert" : "Réglages"}
             </div>
@@ -3377,6 +3456,9 @@ export default function Carnet() {
             onTouchStart={() => { draggingRef.current = true; clearTimeout(resumeRef.current); }}
             onTouchEnd={() => { clearTimeout(resumeRef.current); resumeRef.current = setTimeout(() => { draggingRef.current = false; }, 700); }}
           >
+            {sizeFly && (
+              <div className="sizefly" aria-live="polite"><span>Taille <b>{size}</b></span></div>
+            )}
             {!blocks.some((b) => b.type === "row" && b.cells.some((c) => c.lyrics.trim())) && (
               <div className="sheetinner">
                 <div className="warnbar">
@@ -3628,7 +3710,10 @@ export default function Carnet() {
             </div>
             <div className="field">
               <label>Lecture</label>
-              <p className="hint">Taille du texte des grilles, pour tout le carnet.</p>
+              <p className="hint">
+                Taille du texte des grilles, pour tout le carnet. Se règle aussi
+                au pincement à deux doigts, directement sur la chanson.
+              </p>
             </div>
             <div className="actions">
               <div className="stepper">
