@@ -1245,9 +1245,9 @@ const CSS = `
 .libscroll .top { flex:0 0 auto; }
 .libhead { position:sticky; top:0; z-index:10; background:var(--bg);
   padding:12px 16px 10px; border-bottom:1px solid var(--line); }
-.lib { padding:12px 16px calc(96px + var(--sab)); }
+.lib { padding:12px 16px calc(150px + var(--sab)); }
 .search { width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--line); background:var(--panel);
-  color:var(--ink); font-size:15px; }
+  color:var(--ink); font-size:16px; }
 .search::placeholder { color:var(--muted); }
 /* Filtres sur une ligne : la liste (2/3) puis le menu des tags (1/3). */
 .filterrow { display:flex; gap:8px; margin-top:10px; position:relative; }
@@ -1273,7 +1273,7 @@ const CSS = `
 /* Palette flottante Jouer / Réviser / Quiz : au-dessus de la liste, effacée
    pendant le scroll pour laisser lire, revenue dès qu'il s'arrête. */
 .floatbar { position:absolute; left:50%; transform:translateX(-50%);
-  bottom:calc(16px + var(--sab)); z-index:6; display:flex; gap:6px; padding:6px;
+  bottom:calc(76px + var(--sab)); z-index:6; display:flex; gap:6px; padding:6px;
   max-width:calc(100% - 24px); border-radius:16px; background:var(--panel);
   border:1px solid var(--line); box-shadow:0 8px 28px rgba(0,0,0,.4); transition:opacity .3s; }
 .floatbar .btn { flex:1; padding-left:10px; padding-right:10px; white-space:nowrap; }
@@ -1319,6 +1319,7 @@ const CSS = `
 .listsel { flex:1; min-width:0; padding:9px 11px; border-radius:8px; border:1px solid var(--line);
   background:var(--panel2); color:var(--ink); font-size:13.5px; }
 .tagpick { display:flex; gap:6px; flex-wrap:wrap; width:100%; }
+.tagpick.center { justify-content:center; }
 .tagedit { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .tagedit input { flex:1; min-width:110px; padding:10px 12px; border-radius:9px; border:1px solid var(--line);
   background:var(--panel); color:var(--ink); font-size:15px; }
@@ -1453,7 +1454,7 @@ const CSS = `
   box-shadow:0 4px 16px rgba(0,0,0,.45); }
 .speedfly .stepper { border:none; background:none; }
 /* Popup de fin de révision — au-dessus de la revbar (z-index 4). */
-.modal { position:absolute; inset:0; z-index:8; display:flex; align-items:center; justify-content:center;
+.modal { position:absolute; inset:0; z-index:40; display:flex; align-items:center; justify-content:center;
   padding:20px; background:rgba(0,0,0,.55); }
 .modalbox { width:100%; max-width:340px; max-height:100%; overflow-y:auto;
   background:var(--panel); border:1px solid var(--line);
@@ -1496,7 +1497,7 @@ a.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px
 .amchoice { width:100%; text-align:left; border-radius:8px; }
 .amchoice:hover { background:var(--acc-soft); }
 @media (min-width:720px) { .sheet { padding:26px 32px calc(130px + var(--sab)); }
-  .lib { padding:18px 32px calc(96px + var(--sab)); }
+  .lib { padding:18px 32px calc(150px + var(--sab)); }
   .libhead { padding:12px 32px 10px; }
   .flowdiag svg { width:min(44vh, 380px); }
   .flowhint { display:block; text-align:center; font-family:'JetBrains Mono'; font-size:9.5px;
@@ -2109,12 +2110,16 @@ export default function Carnet() {
   const [tagMenu, setTagMenu] = useState(false); // menu déroulant des tags (multi-sélection) ouvert
   const [lists, setLists] = useState(freshLists);
   const [listFilter, setListFilter] = useState(""); // id de liste, "" = tout le carnet
-  const [theme, setTheme] = useState("dark"); // "dark" | "light"
+  const [theme, setTheme] = useState("light"); // "dark" | "light" — clair par défaut, le choix persisté prime
   const pendingReviseRef = useRef(false); // « Réviser au hasard » : démarrer dès la chanson ouverte
   const [quiz, setQuiz] = useState(null); // null | { asked, correct } — la partie survit aux changements de chanson
   const [quizEnd, setQuizEnd] = useState(null); // score affiché à l'arrêt de la partie
   const [quizQ, setQuizQ] = useState(0); // nonce de question : re-arme même quand le hasard retombe sur la même chanson
   const [quizAsk, setQuizAsk] = useState(false); // popup de lancement : sur quel vivier tirer ?
+  const [playAsk, setPlayAsk] = useState(false); // popup « Jouer » : sur quel vivier tirer ?
+  const [playScope, setPlayScope] = useState("all"); // "all" = tout l'affichage | "known" = au-dessus du seuil d'étoiles
+  const [playMin, setPlayMin] = useState(3); // seuil du vivier « mieux connues » (note ≥ seuil)
+  const [playTags, setPlayTags] = useState([]); // tags exigés pour le tirage — en plus des filtres de la liste
   const [quizScope, setQuizScope] = useState("all"); // "all" = tout l'affichage | "weak" = sous le seuil d'étoiles
   const [quizMax, setQuizMax] = useState(3); // seuil du vivier « moins connues » (note ≤ seuil)
   const [quizDetail, setQuizDetail] = useState(false); // détail avant → après déplié en fin de partie
@@ -2175,7 +2180,7 @@ export default function Carnet() {
       if (carnet.sort === "title" || carnet.sort === "artist" || carnet.sort === "memo") setSort(carnet.sort);
       if (carnet.sortDir === "desc") setSortDir("desc");
       if (typeof carnet.barOpen === "boolean") setBarOpen(carnet.barOpen);
-      if (carnet.theme === "light") setTheme("light");
+      if (carnet.theme === "dark" || carnet.theme === "light") setTheme(carnet.theme);
       if (typeof carnet.listFilter === "string") setListFilter(carnet.listFilter);
       if (carnet.instrument === "piano" || carnet.instrument === "guitar") setInstrument(carnet.instrument);
       setReady(true);
@@ -2591,8 +2596,8 @@ export default function Carnet() {
      carnet sans note redevient un tirage uniforme. Le tirage respecte les
      filtres de la bibliothèque (recherche, tags, liste), chanson courante
      exclue. */
-  const drawPool = () => {
-    const pool = filtered.filter((s) => s.id !== currentId);
+  const drawPool = (base = filtered) => {
+    const pool = base.filter((s) => s.id !== currentId);
     return pool.length ? pool : songs.filter((s) => s.id !== currentId);
   };
   const weightedDraw = (pool, weightOf) => {
@@ -2602,10 +2607,26 @@ export default function Carnet() {
     const r = Math.random() * total;
     return pool[acc.findIndex((a) => r < a)] || pool[pool.length - 1];
   };
+  /* « Jouer » (🎹) ouvre d'abord un popup de vivier — tags exigés et, au
+     choix, seulement les chansons au-dessus d'un seuil d'étoiles — puis
+     tire pondéré comme avant. Choix gardés en état simple (non persistés) :
+     ni carnet:v4 ni la signature de sauvegarde ne bougent. Le 🎹 de la vue
+     chanson retire dans le même vivier, sans re-poser la question. */
+  const playPool = useMemo(() => {
+    let pool = filtered;
+    if (playTags.length) pool = pool.filter((s) => {
+      const ids = tags.byKey[songKey(s)] || [];
+      return playTags.every((t) => ids.includes(t));
+    });
+    if (playScope === "known") pool = pool.filter((s) => (s.memo || 0) >= playMin);
+    return pool;
+  }, [filtered, playTags, playScope, playMin, tags]);
+  const askPlay = () => { if (filtered.length) setPlayAsk(true); };
   const openRandom = () => {
-    const pick = weightedDraw(drawPool(), (s) => 2 ** (s.memo || 0));
+    const pick = weightedDraw(drawPool(playPool), (s) => 2 ** (s.memo || 0));
     if (pick) openSong(pick.id);
   };
+  const startPlay = () => { setPlayAsk(false); openRandom(); };
   const openReviseRandom = () => {
     const pick = weightedDraw(drawPool(), (s) => 2 ** (5 - (s.memo || 0)));
     if (!pick) return;
@@ -2868,7 +2889,7 @@ export default function Carnet() {
                 ? `Écouter sur Apple Music — ${current.am.title}`
                 : "Chercher cette chanson dans Apple Music"}>🍎</a>
             {songs.length > 1 && (
-              <button className="iconbtn" title="Une autre au hasard — les mieux connues sortent plus souvent" onClick={openRandom}>🎲</button>
+              <button className="iconbtn" title="Une autre au hasard dans le même vivier — les mieux connues sortent plus souvent" onClick={openRandom}>🎹</button>
             )}
             <button className={"iconbtn" + (reviseMode ? " on" : "")} aria-pressed={!!reviseMode} disabled={!revealables}
               title={quiz ? "Arrêter le quiz" : reviseMode ? "Quitter la révision" : "Réviser — paroles cachées, révélées ligne à ligne"}
@@ -3065,12 +3086,60 @@ export default function Carnet() {
           </div>
           {songs.length > 1 && (
             <div className={"floatbar" + (libScrolled ? " hide" : "")}>
-              <button className="btn slim" onClick={openRandom}
-                title="Une chanson au hasard, en privilégiant les mieux connues — pour jouer">🎲 Jouer</button>
+              <button className="btn slim" onClick={askPlay}
+                title="Une chanson au hasard, en privilégiant les mieux connues — pour jouer">🎹 Jouer</button>
               <button className="btn slim" onClick={openReviseRandom}
                 title="Une chanson au hasard, en privilégiant les moins connues — la révision démarre aussitôt">🎓 Réviser</button>
               <button className="btn slim" onClick={askQuiz}
                 title="Une ligne au hasard d'une chanson au hasard — l'aviez-vous en tête ? Les scores se mettent à jour en jouant">❓ Quiz</button>
+            </div>
+          )}
+          {playAsk && (
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Jouer une chanson"
+              onClick={(e) => { if (e.target === e.currentTarget) setPlayAsk(false); }}>
+              <div className="modalbox">
+                <div className="modalicon">🎹</div>
+                <h2>Jouer</h2>
+                <p>Une chanson au hasard — les mieux connues sortent plus souvent.</p>
+                {tags.defs.length > 0 && (
+                  <div className="tagpick center">
+                    {tags.defs.map((t) => {
+                      const on = playTags.includes(t.id);
+                      return (
+                        <button key={t.id} className={"tagchip" + (on ? " on" : "")} aria-pressed={on}
+                          style={on ? { color: tagInk(t.color, theme === "light"), borderColor: tagInk(t.color, theme === "light"), background: t.color + "22" } : undefined}
+                          onClick={() => setPlayTags((f) => (on ? f.filter((x) => x !== t.id) : [...f, t.id]))}>
+                          <span>{t.icon}</span><span>{t.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="seg2 wide">
+                  <button className={playScope === "all" ? "on" : ""} aria-pressed={playScope === "all"}
+                    title="Tirage parmi toutes les chansons affichées, pondéré par la note"
+                    onClick={() => setPlayScope("all")}>Toutes</button>
+                  <button className={playScope === "known" ? "on" : ""} aria-pressed={playScope === "known"}
+                    title="Ne tirer que les chansons dont la note atteint le seuil"
+                    onClick={() => setPlayScope("known")}>Les mieux connues</button>
+                </div>
+                {playScope === "known" && (
+                  <>
+                    <p>Note au moins égale à <b style={{ color: "var(--amber)" }}>★ {playMin}</b></p>
+                    <Stars value={playMin} onChange={(n) => setPlayMin(n || 1)} />
+                  </>
+                )}
+                <p className="modalcount">
+                  {playPool.length === 0
+                    ? "Aucune chanson dans ce vivier"
+                    : `${playPool.length} chanson${playPool.length > 1 ? "s" : ""} dans le tirage`}
+                  {playPool.length > 0 && playPool.length < filtered.length && ` sur ${filtered.length}`}
+                </p>
+                <div className="actions" style={{ justifyContent: "center" }}>
+                  <button className="btn ghost" onClick={() => setPlayAsk(false)}>Annuler</button>
+                  <button className="btn primary" disabled={!playPool.length} onClick={startPlay}>Jouer</button>
+                </div>
+              </div>
             </div>
           )}
           {quizAsk && (
