@@ -1335,15 +1335,26 @@ const CSS = `
 .ddopt .ddcheck { flex:0 0 14px; text-align:center; color:var(--amber); font-size:12px; }
 .ddopt.on { background:var(--acc-faint); }
 .ddclear { justify-content:center; color:var(--muted); font-size:12.5px; }
-/* Palette flottante Jouer / Réviser / Quiz : au-dessus de la liste, effacée
-   pendant le scroll pour laisser lire, revenue dès qu'il s'arrête. */
+/* Palette flottante Jouer / Réviser : au-dessus de la liste, effacée pendant
+   le scroll pour laisser lire, revenue dès qu'il s'arrête. Deux cibles hautes
+   plutôt que trois étroites — c'est le pouce qui les vise, l'autre main sur le
+   manche : 54 px, au-dessus des 44 pt d'Apple. */
 .floatbar { position:absolute; left:50%; transform:translateX(-50%);
-  bottom:calc(76px + var(--sab)); z-index:6; display:flex; gap:6px; padding:6px;
-  max-width:calc(100% - 24px); border-radius:16px; background:var(--panel);
+  bottom:calc(76px + var(--sab)); z-index:6; display:flex; gap:8px; padding:8px;
+  width:calc(100% - 24px); max-width:420px; border-radius:18px; background:var(--bg);
   border:1px solid var(--line); box-shadow:0 8px 28px rgba(0,0,0,.4); transition:opacity .3s; }
-.floatbar .btn { flex:1; padding-left:10px; padding-right:10px; white-space:nowrap; }
+/* Le plateau prend le fond de la page, les touches montent d'un cran au-dessus :
+   sans ce contraste, deux boutons voisins se fondent en un seul bloc et on ne
+   voit plus où viser. En clair, c'est --panel (blanc) qui fait ce cran.
+   Fond et bord sont écrits ici, et non hérités de .btn : le reset .cb button
+   (background:none, border:none) est plus spécifique que .btn et les efface. */
+.floatbar .btn { flex:1; min-height:54px; padding:0 12px; font-size:16.5px; white-space:nowrap;
+  border-radius:12px; background:var(--panel2); border:1px solid var(--line);
+  display:flex; align-items:center; justify-content:center; gap:9px; }
+.floatbar .btn i { font-style:normal; font-size:23px; line-height:1; }
 .floatbar.hide { opacity:0; pointer-events:none; }
 .cb.light .floatbar { box-shadow:0 8px 28px rgba(0,0,0,.18); }
+.cb.light .floatbar .btn { background:var(--panel); }
 /* Ligne du tri : les boutons à gauche, le compteur de chansons à droite. */
 .sortrow { display:flex; align-items:center; gap:8px; margin-top:10px; min-height:24px; }
 .sortrow .count { margin-left:auto; }
@@ -3149,7 +3160,7 @@ export default function Carnet() {
                   : "Chanson suivante — dans l'ordre de la liste"}>⏭</button>
             )}
             <button className={"iconbtn" + (reviseMode ? " on" : "")} aria-pressed={!!reviseMode} disabled={!revealables}
-              title={quiz ? "Arrêter le quiz" : reviseMode ? "Quitter la révision" : "Réviser — paroles cachées, révélées ligne à ligne"}
+              title={quiz ? "Arrêter la révision — score de la session" : reviseMode ? "Quitter la révision" : "Réviser — paroles cachées, révélées ligne à ligne"}
               onClick={() => (quiz ? stopQuiz() : reviseMode ? setReviseMode(null) : startRevise("seq"))}>🎓</button>
             <button className={"iconbtn glyph sharp" + (showChords ? " on" : "")} aria-pressed={showChords}
               title={showChords ? "Masquer les accords" : "Afficher les accords"}
@@ -3350,12 +3361,10 @@ export default function Carnet() {
           </div>
           {songs.length > 1 && (
             <div className={"floatbar" + (libScrolled ? " hide" : "")}>
-              <button className="btn slim" onClick={askPlay}
-                title="Enchaîner les chansons — au hasard en privilégiant les mieux connues, ou le vivier dans l'ordre">🎹 Jouer</button>
-              <button className="btn slim" onClick={openReviseRandom}
-                title="Une chanson au hasard, en privilégiant les moins connues — la révision démarre aussitôt">🎓 Réviser</button>
-              <button className="btn slim" onClick={askQuiz}
-                title="Une ligne au hasard d'une chanson au hasard — l'aviez-vous en tête ? Les scores se mettent à jour en jouant">❓ Quiz</button>
+              <button className="btn" onClick={askPlay}
+                title="Enchaîner les chansons — au hasard en privilégiant les mieux connues, ou le vivier dans l'ordre"><i>🎹</i>Jouer</button>
+              <button className="btn" onClick={askQuiz}
+                title="Une ligne au hasard d'une chanson au hasard — l'aviez-vous en tête ? Les scores se mettent à jour en révisant"><i>🎓</i>Réviser</button>
             </div>
           )}
           {playAsk && (
@@ -3419,11 +3428,11 @@ export default function Carnet() {
             </div>
           )}
           {quizAsk && (
-            <div className="modal" role="dialog" aria-modal="true" aria-label="Lancer un quiz"
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Lancer une révision"
               onClick={(e) => { if (e.target === e.currentTarget) setQuizAsk(false); }}>
               <div className="modalbox">
-                <div className="modalicon">❓</div>
-                <h2>Quiz</h2>
+                <div className="modalicon">🎓</div>
+                <h2>Réviser</h2>
                 <p>Une ligne au hasard d'une chanson au hasard — l'aviez-vous en tête ?</p>
                 <div className="seg2 wide">
                   <button className={quizScope === "all" ? "on" : ""} aria-pressed={quizScope === "all"}
@@ -3588,7 +3597,7 @@ export default function Carnet() {
             <div className="revbar">
               <div className="inner">
                 <div className="revprog">
-                  <span>Quiz</span>
+                  <span>Révision</span>
                   <div className="revtrack"><div className="revfill" style={{ width: quiz.asked ? `${(quiz.correct / quiz.asked) * 100}%` : "0%" }} /></div>
                   <span><b>{quiz.correct}</b> / {quiz.asked}</span>
                 </div>
@@ -3601,7 +3610,7 @@ export default function Carnet() {
                     <button className="btn revmain know" onClick={() => answer(true)}>✓ Savais</button>
                     <button className="btn revmain dont" onClick={() => answer(false)}>✗ Savais pas</button>
                   </>)}
-                  <button className="iconbtn stop" title="Arrêter le quiz — score de la partie"
+                  <button className="iconbtn stop" title="Arrêter la révision — score de la session"
                     onClick={stopQuiz}>■</button>
                 </div>
               </div>
@@ -3677,20 +3686,20 @@ export default function Carnet() {
             </div>
           )}
           {quizEnd && (
-            <div className="modal" role="dialog" aria-modal="true" aria-label="Fin de quiz"
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Fin de révision"
               onClick={(e) => { if (e.target === e.currentTarget) { setQuizEnd(null); setView("lib"); } }}>
               <div className="modalbox">
                 <div className="modalicon">🏁</div>
-                <h2>Quiz terminé</h2>
+                <h2>Révision terminée</h2>
                 <div className="modalscore">{quizEnd.correct} / {quizEnd.asked}</div>
                 <p>
                   {Math.round((100 * quizEnd.correct) / quizEnd.asked)} % de bonnes réponses —
-                  les scores des chansons jouées ont été mis à jour.
+                  les scores des chansons révisées ont été mis à jour.
                 </p>
                 {quizEnd.rows && quizEnd.rows.length > 0 && (
                   <>
                     <button className="btn slim ghost" style={{ width: "100%" }} aria-expanded={quizDetail}
-                      title="Score de chaque chanson avant et après la partie"
+                      title="Score de chaque chanson avant et après la session"
                       onClick={() => setQuizDetail(!quizDetail)}>
                       Détail ({quizEnd.rows.length}) {quizDetail ? "▴" : "▾"}
                     </button>
