@@ -1298,6 +1298,7 @@ const CSS = `
 .iconbtn.glyph { line-height:1; }
 .iconbtn.glyph.back { font-size:29px; padding-bottom:3px; }
 .iconbtn.glyph.sharp { font-size:23px; }
+.iconbtn.glyph.next { font-size:19px; }
 @media (max-width:374px) { .top { gap:8px; } }
 /* Un point ambre : le carnet a changé depuis la dernière sauvegarde en fichier. */
 .iconbtn.nudge { position:relative; }
@@ -1427,9 +1428,14 @@ const CSS = `
 .stepper span { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em; color:var(--muted); padding:0 8px;
   text-transform:uppercase; min-width:70px; text-align:center; }
 .stepper span b { color:var(--ink); font-weight:700; }
-/* touch-action : les deux pans restent au navigateur, le pincement revient à
-   l'app — c'est lui qui règle la taille du texte, pas le zoom de la page. */
-.sheet { flex:1; overflow-y:auto; touch-action:pan-x pan-y; padding:20px 16px calc(120px + var(--sab)); }
+/* touch-action:pan-y — seul le défilement vertical reste au navigateur. Le
+   pincement revient à l'app (il règle la taille du texte, pas le zoom de page)
+   et l'horizontale aussi : sans cela, un glissé latéral part en navigation
+   arrière du navigateur (Chrome Android, onglet Safari) au lieu d'arriver
+   jusqu'à nous. overscroll-behavior-x en renfort. La mise en page ne déborde
+   jamais en largeur — les lignes d'accords s'enroulent — donc rien à perdre. */
+.sheet { flex:1; overflow-y:auto; touch-action:pan-y; overscroll-behavior-x:none;
+  padding:20px 16px calc(120px + var(--sab)); }
 .sheetinner { max-width:760px; margin:0 auto; }
 .sec { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--amber);
   margin:26px 0 10px; display:flex; align-items:center; gap:10px; }
@@ -2361,18 +2367,35 @@ export default function Carnet() {
   const sizeRef = useRef(size);
   useEffect(() => { sizeRef.current = size; }, [size]);
 
-  // Pincement à deux doigts sur la feuille : règle la taille du texte, le même
-  // réglage global que A− / A+ des Réglages (13 → 30). Écouteurs natifs et non
-  // props React : React attache touchmove en passif sur la racine, or il faut
-  // pouvoir couper le zoom de page de Safari pendant le geste. Sur l'écran
-  // d'accueil, maximum-scale=1 l'a déjà coupé ; dans l'onglet, gesturestart
-  // (WebKit) doit être annulé pour que les touchmove continuent d'arriver.
+  // Ce que déclenchent les glissés — relu à chaque rendu pour que l'écouteur
+  // natif, abonné une seule fois, appelle toujours la version fraîche.
+  const swipeRef = useRef({});
+  useEffect(() => {
+    swipeRef.current = { back: leaveSong, next: songs.length > 1 ? openRandom : null };
+  });
+
+  // Gestes sur la feuille, tous branchés au même endroit :
+  //  — deux doigts qui s'écartent : la taille du texte, le même réglage global
+  //    que A− / A+ des Réglages (13 → 30) ;
+  //  — un doigt vers la droite : retour à la liste, comme le ‹ (convention iOS,
+  //    on revient d'où l'on vient) ; vers la gauche : chanson suivante, comme ⏭.
+  // Écouteurs natifs et non props React : React attache touchmove en passif sur
+  // la racine, or il faut pouvoir couper le zoom de page de Safari pendant le
+  // pincement. Sur l'écran d'accueil, maximum-scale=1 l'a déjà coupé ; dans
+  // l'onglet, gesturestart (WebKit) doit être annulé pour que les touchmove
+  // continuent d'arriver.
   useEffect(() => {
     const el = sheetRef.current;
     if (view !== "song" || !el) return;
     const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
-    let pinch = null, hide = null;
+    let pinch = null, hide = null, swipe = null;
     const start = (e) => {
+      if (e.touches.length === 1) {
+        const t = e.touches[0];
+        swipe = { x: t.clientX, y: t.clientY, t: e.timeStamp };
+        return;
+      }
+      swipe = null; // un deuxième doigt : ce n'est plus un glissé
       if (e.touches.length !== 2) return;
       const d = spread(e.touches);
       if (d < 24) return; // deux doigts collés : ce n'est pas encore un pincement
@@ -2381,6 +2404,12 @@ export default function Carnet() {
       setSizeFly(true);
     };
     const move = (e) => {
+      if (swipe && e.touches.length === 1) {
+        // Parti vers le bas : c'est un défilement, on ne guettera plus de glissé.
+        const t = e.touches[0], dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
+        if (Math.abs(dy) > 20 && Math.abs(dy) > Math.abs(dx)) swipe = null;
+        return;
+      }
       if (!pinch || e.touches.length !== 2) return;
       // Ni zoom de page ni défilement de la feuille pendant qu'on règle.
       if (e.cancelable) e.preventDefault();
@@ -2389,6 +2418,17 @@ export default function Carnet() {
       if (next !== sizeRef.current) setSize(next);
     };
     const end = (e) => {
+      if (swipe && e.touches.length === 0) {
+        const t = e.type === "touchend" && e.changedTouches[0];
+        if (!t) { swipe = null; return; } // touchcancel : le doigt n'a rien voulu dire
+        const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y, dt = e.timeStamp - swipe.t;
+        swipe = null;
+        // Franc, horizontal et vif : sinon c'était un défilement ou une hésitation.
+        if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 2 && dt < 700) {
+          const act = dx > 0 ? swipeRef.current.back : swipeRef.current.next;
+          if (act) act();
+        }
+      }
       if (!pinch || e.touches.length >= 2) return;
       pinch = null;
       clearTimeout(hide);
@@ -2794,6 +2834,9 @@ export default function Carnet() {
     if (pick) openSong(pick.id);
   };
   const startPlay = () => { setPlayAsk(false); openRandom(); };
+  // Sortie de la chanson : le ‹ de la barre du haut et le glissé vers la droite
+  // mènent au même endroit — en quiz, la partie s'arrête et le score s'affiche.
+  const leaveSong = () => { setScrolling(false); if (quiz) stopQuiz(); else setView("lib"); };
   const openReviseRandom = () => {
     const pick = weightedDraw(drawPool(), (s) => 2 ** (5 - (s.memo || 0)));
     if (!pick) return;
@@ -3049,14 +3092,11 @@ export default function Carnet() {
           </>
         ) : view === "song" ? (
           <>
-            <button className="iconbtn glyph back" title="Retour" onClick={() => { setScrolling(false); if (quiz) stopQuiz(); else setView("lib"); }}>‹</button>
+            <button className="iconbtn glyph back" title="Retour" onClick={leaveSong}>‹</button>
             <div className="spacer" />
-            <a className="iconbtn" href={amLink(current)} target="_blank" rel="noopener noreferrer"
-              title={current.am && current.am.url
-                ? `Écouter sur Apple Music — ${current.am.title}`
-                : "Chercher cette chanson dans Apple Music"}><AmIcon /></a>
             {songs.length > 1 && (
-              <button className="iconbtn" title="Une autre au hasard dans le même vivier — les mieux connues sortent plus souvent" onClick={openRandom}>🎹</button>
+              <button className="iconbtn glyph next" onClick={openRandom}
+                title="Chanson suivante — tirée dans le même vivier, les mieux connues sortent plus souvent">⏭</button>
             )}
             <button className={"iconbtn" + (reviseMode ? " on" : "")} aria-pressed={!!reviseMode} disabled={!revealables}
               title={quiz ? "Arrêter le quiz" : reviseMode ? "Quitter la révision" : "Réviser — paroles cachées, révélées ligne à ligne"}
@@ -3070,6 +3110,12 @@ export default function Carnet() {
             <button className={"iconbtn" + (scrolling ? " on" : "")} aria-pressed={scrolling}
               title={scrolling ? "Arrêter le défilement automatique" : "Défilement automatique"}
               onClick={() => setScrolling(!scrolling)}>{scrolling ? "⏸" : "▶"}</button>
+            {/* Apple Music en dernier : c'est la sortie de l'app, pas une action
+                sur la chanson — elle mérite le bord, après les outils de jeu. */}
+            <a className="iconbtn" href={amLink(current)} target="_blank" rel="noopener noreferrer"
+              title={current.am && current.am.url
+                ? `Écouter sur Apple Music — ${current.am.title}`
+                : "Chercher cette chanson dans Apple Music"}><AmIcon /></a>
           </>
         ) : (
           <>
@@ -3713,6 +3759,10 @@ export default function Carnet() {
               <p className="hint">
                 Taille du texte des grilles, pour tout le carnet. Se règle aussi
                 au pincement à deux doigts, directement sur la chanson.
+              </p>
+              <p className="hint">
+                Sur la chanson, un glissé du doigt vers la droite revient à la
+                liste, vers la gauche passe à la chanson suivante.
               </p>
             </div>
             <div className="actions">

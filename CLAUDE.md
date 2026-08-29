@@ -112,8 +112,9 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 ### Doctrine UX (choix validés par l'utilisateur)
 
 - Barre du haut de la chanson : actions globales fréquentes en boutons
-  icônes (🎲 jouer, 🎓 réviser, ♯ accords, 🎼 diagrammes, ▶/⏸ défilement),
-  état actif = fond ambre. Menu dépliant : uniquement le par-chanson
+  icônes (⏭ suivante, 🎓 réviser, ♯ accords, 🎼 diagrammes, ▶/⏸ défilement),
+  puis Apple Music **en dernier** — c'est une sortie de l'app, pas une action
+  sur la chanson. État actif = fond ambre. Menu dépliant : uniquement le par-chanson
   (tags, listes, note « Appris », tonalité, Modifier, Supprimer). Réglages
   rares dans ⚙. Contrôles contextuels flottants (pilule Vitesse visible
   seulement pendant le défilement).
@@ -121,13 +122,22 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 - Glyphes typographiques dans la barre d'emoji : `‹` et `♯` n'occupent qu'un
   tiers de leur cadratin, on les remonte (`.iconbtn.glyph.back/.sharp`) pour
   qu'ils pèsent autant que 🎓 ou 🎼 — mesurer, ne pas se fier au `font-size`.
+- Glissés à un doigt sur la feuille : vers la **droite** = retour à la liste
+  (convention iOS, mêmes effets que `‹` — en quiz, la partie s'arrête), vers la
+  **gauche** = chanson suivante (mêmes effets que ⏭, donc rien si le carnet
+  n'a qu'une chanson). Seuils : > 70 px, horizontale > 2 × verticale, < 700 ms,
+  abandon dès que le doigt part en vertical. `touch-action:pan-y` +
+  `overscroll-behavior-x:none` sur `.sheet` sont **indispensables** : sans eux,
+  le glissé latéral part en navigation arrière du navigateur (vérifié : la page
+  quitte l'app) au lieu d'arriver jusqu'au code.
 - Pincement à deux doigts sur la feuille = le réglage global de taille
   (`size`, 13 → 30), le même que A− / A+ des Réglages ; pilule « Taille »
   collée en haut de la feuille pendant le geste. Écouteurs **natifs** non
   passifs (React attache `touchmove` en passif sur la racine, `preventDefault`
   y serait ignoré), `gesturestart`/`gesturechange` annulés pour l'onglet
-  Safari, `touch-action:pan-x pan-y` sur `.sheet`. Le `maximum-scale=1` de
-  `index.html` coupe déjà le zoom de page sur l'écran d'accueil.
+  Safari. Le `maximum-scale=1` de `index.html` coupe déjà le zoom de page sur
+  l'écran d'accueil. Pincement et glissé partagent le même effet et les mêmes
+  écouteurs : un deuxième doigt annule le glissé en cours.
 
 ### Révision et tirages
 
