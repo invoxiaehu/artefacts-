@@ -1239,18 +1239,50 @@ const CSS = `
 .iconbtn.nudge { position:relative; }
 .iconbtn.nudge::after { content:''; position:absolute; top:4px; right:4px; width:6px; height:6px;
   border-radius:50%; background:var(--amber); box-shadow:0 0 0 2px var(--panel); }
-.lib { flex:1; overflow-y:auto; padding:14px 16px calc(28px + var(--sab)); }
+/* La bibliothèque scrolle d'un seul bloc : la barre de titre défile avec les
+   chansons, seul l'en-tête (recherche, filtres, tri) reste figé en haut. */
+.libscroll { flex:1; overflow-y:auto; display:flex; flex-direction:column; }
+.libscroll .top { flex:0 0 auto; }
+.libhead { position:sticky; top:0; z-index:10; background:var(--bg);
+  padding:12px 16px 10px; border-bottom:1px solid var(--line); }
+.lib { padding:12px 16px calc(96px + var(--sab)); }
 .search { width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--line); background:var(--panel);
-  color:var(--ink); font-size:15px; margin-bottom:12px; }
+  color:var(--ink); font-size:15px; }
 .search::placeholder { color:var(--muted); }
-/* Panneau de filtrage : liste puis tags, sous la recherche. */
-.filterpane { display:flex; flex-direction:column; gap:10px; margin-bottom:12px; }
-.filterpane .listsel { width:100%; }
-.filterpane .toolrow { margin:0; }
-/* Actions de la bibliothèque : trois boutons à parts égales. */
-.actrow { display:flex; gap:8px; margin:0 0 12px; }
-.actrow .btn { flex:1; padding-left:6px; padding-right:6px; white-space:nowrap; }
-.count { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase; margin:0 0 10px; }
+/* Filtres sur une ligne : la liste (2/3) puis le menu des tags (1/3). */
+.filterrow { display:flex; gap:8px; margin-top:10px; position:relative; }
+.filterrow .listsel { flex:2; }
+.tagdd { flex:1; min-width:0; display:flex; }
+.tagddbtn { width:100%; display:flex; align-items:center; gap:5px; text-align:left;
+  overflow:hidden; white-space:nowrap; }
+.tagddbtn > span { overflow:hidden; text-overflow:ellipsis; }
+.tagddbtn .ddarrow { margin-left:auto; font-style:normal; font-size:9px; color:var(--muted); }
+.tagddbtn.on { color:var(--amber); border-color:var(--amber-dim); background:var(--acc-soft); }
+/* Menu déroulant des tags : multi-sélection, refermé d'un tap à côté. */
+.ddback { position:fixed; inset:0; z-index:30; }
+.ddpanel { position:absolute; top:calc(100% + 6px); right:0; z-index:31; min-width:200px;
+  max-width:calc(100% + 0px); background:var(--panel); border:1px solid var(--line);
+  border-radius:10px; overflow:hidden; box-shadow:0 10px 30px rgba(0,0,0,.35); }
+.ddopt { display:flex; align-items:center; gap:9px; width:100%; padding:10px 12px;
+  text-align:left; font-size:13.5px; color:var(--ink); }
+.ddopt + .ddopt { border-top:1px solid var(--line); }
+.ddopt b { font-family:'JetBrains Mono'; font-size:10px; color:var(--muted); margin-left:auto; }
+.ddopt .ddcheck { flex:0 0 14px; text-align:center; color:var(--amber); font-size:12px; }
+.ddopt.on { background:var(--acc-faint); }
+.ddclear { justify-content:center; color:var(--muted); font-size:12.5px; }
+/* Palette flottante Jouer / Réviser / Quiz : au-dessus de la liste, effacée
+   pendant le scroll pour laisser lire, revenue dès qu'il s'arrête. */
+.floatbar { position:absolute; left:50%; transform:translateX(-50%);
+  bottom:calc(16px + var(--sab)); z-index:6; display:flex; gap:6px; padding:6px;
+  max-width:calc(100% - 24px); border-radius:16px; background:var(--panel);
+  border:1px solid var(--line); box-shadow:0 8px 28px rgba(0,0,0,.4); transition:opacity .3s; }
+.floatbar .btn { flex:1; padding-left:10px; padding-right:10px; white-space:nowrap; }
+.floatbar.hide { opacity:0; pointer-events:none; }
+.cb.light .floatbar { box-shadow:0 8px 28px rgba(0,0,0,.18); }
+/* Ligne du tri : les boutons à gauche, le compteur de chansons à droite. */
+.sortrow { display:flex; align-items:center; gap:8px; margin-top:10px; min-height:24px; }
+.sortrow .count { margin-left:auto; }
+.count { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase; margin:0; }
 .notice { position:relative; border:1px solid var(--amber-dim); background:var(--acc-faint); border-radius:10px;
   padding:11px 40px 11px 13px; font-size:13px; line-height:1.5; margin-bottom:12px; }
 .noticeclose { position:absolute; top:7px; right:7px; width:26px; height:26px; border-radius:7px; display:grid;
@@ -1264,8 +1296,6 @@ const CSS = `
 .cardmain:active { transform:scale(.996); }
 .carddel { flex:0 0 auto; padding:0 13px; color:var(--muted); border-left:1px solid var(--line); font-size:14px; }
 .carddel:hover { color:var(--hot); background:rgba(200,80,60,.08); }
-.toolrow { display:flex; align-items:center; gap:8px; margin:0 0 12px; flex-wrap:wrap; }
-.toolrow .lab { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); }
 .seg2 { display:flex; border:1px solid var(--line); border-radius:8px; background:var(--panel2); overflow:hidden; }
 .seg2 button { padding:8px 13px; font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
 .seg2 button.on { color:var(--amber); background:var(--acc-soft); }
@@ -1466,7 +1496,8 @@ a.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px
 .amchoice { width:100%; text-align:left; border-radius:8px; }
 .amchoice:hover { background:var(--acc-soft); }
 @media (min-width:720px) { .sheet { padding:26px 32px calc(130px + var(--sab)); }
-  .lib { padding:18px 32px calc(32px + var(--sab)); }
+  .lib { padding:18px 32px calc(96px + var(--sab)); }
+  .libhead { padding:12px 32px 10px; }
   .flowdiag svg { width:min(44vh, 380px); }
   .flowhint { display:block; text-align:center; font-family:'JetBrains Mono'; font-size:9.5px;
     letter-spacing:.14em; text-transform:uppercase; color:var(--muted); padding:0 0 10px; } }
@@ -2075,6 +2106,7 @@ export default function Carnet() {
   const [offline, setOffline] = useState(() => (window.offline ? window.offline.get() : null));
   const [tags, setTags] = useState(freshTags);
   const [tagFilter, setTagFilter] = useState([]);
+  const [tagMenu, setTagMenu] = useState(false); // menu déroulant des tags (multi-sélection) ouvert
   const [lists, setLists] = useState(freshLists);
   const [listFilter, setListFilter] = useState(""); // id de liste, "" = tout le carnet
   const [theme, setTheme] = useState("dark"); // "dark" | "light"
@@ -2099,6 +2131,8 @@ export default function Carnet() {
   const sheetRef = useRef(null);
   const fileRef = useRef(null);
   const syncHashRef = useRef(false);
+  const [libScrolled, setLibScrolled] = useState(false); // scroll en cours dans la bibliothèque — la palette flottante s'efface
+  const libScrollTimer = useRef(0);
 
   useEffect(() => {
     let alive = true;
@@ -2800,13 +2834,18 @@ export default function Carnet() {
     return m ? m[1] : "dev";
   }, []);
 
-  return (
-    <div className={"cb" + (theme === "light" ? " light" : "")}>
-      <style>{CSS}</style>
-      <input ref={fileRef} type="file" accept="application/pdf,.pdf" multiple
-        className="vhide" tabIndex={-1} aria-hidden="true"
-        onChange={(e) => { importPdfs(e.target.files); e.target.value = ""; }} />
+  // Palette flottante : effacée pendant le scroll de la liste, revenue
+  // ~250 ms après le dernier mouvement.
+  const onLibScroll = () => {
+    setLibScrolled(true);
+    clearTimeout(libScrollTimer.current);
+    libScrollTimer.current = setTimeout(() => setLibScrolled(false), 250);
+  };
 
+  // Barre de titre : en vue bibliothèque elle vit dans la zone scrollée (elle
+  // défile avec les chansons, seul l'en-tête recherche/filtres/tri reste
+  // figé) ; dans les autres vues elle reste fixée en haut.
+  const topbar = (
       <div className="top">
         {view === "lib" ? (
           <>
@@ -2854,17 +2893,29 @@ export default function Carnet() {
           </>
         )}
       </div>
+  );
+
+  return (
+    <div className={"cb" + (theme === "light" ? " light" : "")}>
+      <style>{CSS}</style>
+      <input ref={fileRef} type="file" accept="application/pdf,.pdf" multiple
+        className="vhide" tabIndex={-1} aria-hidden="true"
+        onChange={(e) => { importPdfs(e.target.files); e.target.value = ""; }} />
+
+      {view !== "lib" && topbar}
 
       {view === "lib" && (
         <>
-          <div className="lib">
-            {/* Filtrage d'abord (recherche, liste, tags), le tri ensuite,
-                les actions enfin — sans libellés : les contrôles se
-                comprennent seuls. */}
+          <div className="libscroll" onScroll={onLibScroll}>
+          {topbar}
+          {/* En-tête figé : recherche, liste + tags sur une ligne, tri et
+              compteur sur la suivante. Les actions vivent dans la palette
+              flottante en bas. */}
+          <div className="libhead">
             <input className="search" value={query} placeholder="Chercher un titre, un artiste…"
               onChange={(e) => setQuery(e.target.value)} />
             {songs.length > 0 && (
-                <div className="filterpane">
+                <div className="filterrow">
                   <select className="listsel" value={activeList} aria-label="Liste affichée"
                     onChange={(e) => {
                       if (e.target.value === "__new__") createList();
@@ -2879,54 +2930,67 @@ export default function Carnet() {
                     <option value="__new__">＋ Nouvelle liste…</option>
                   </select>
                   {tags.defs.length > 0 && (
-                    <div className="toolrow">
-                      {tags.defs.map((t) => {
-                        const on = tagFilter.includes(t.id);
-                        const count = songs.filter((s) => hasTag(s, t.id)).length;
-                        return (
-                          <button key={t.id} className={"tagchip" + (on ? " on" : "")} aria-pressed={on}
-                            title={`${t.label} — ${count} chanson${count > 1 ? "s" : ""}`}
-                            style={on ? { color: tagInk(t.color, theme === "light"), borderColor: tagInk(t.color, theme === "light"), background: t.color + "22" } : undefined}
-                            onClick={() => setTagFilter((f) => (on ? f.filter((x) => x !== t.id) : [...f, t.id]))}>
-                            <span>{t.icon}</span>{count > 0 && <b>{count}</b>}
-                          </button>
-                        );
-                      })}
-                      {tagFilter.length > 0 && (
-                        <button className="btn slim" onClick={() => setTagFilter([])}>Tout voir</button>
+                    <div className="tagdd">
+                      <button className={"listsel tagddbtn" + (tagFilter.length ? " on" : "")}
+                        aria-haspopup="listbox" aria-expanded={tagMenu}
+                        title={tagFilter.length ? "Tags filtrés — seules les chansons portant tous ces tags s'affichent" : "Filtrer par tags"}
+                        onClick={() => setTagMenu((v) => !v)}>
+                        <span>{tagFilter.length
+                          ? tags.defs.filter((t) => tagFilter.includes(t.id)).map((t) => t.icon).join(" ")
+                          : "Tags"}</span>
+                        <i className="ddarrow">▾</i>
+                      </button>
+                      {tagMenu && (
+                        <>
+                          <div className="ddback" onClick={() => setTagMenu(false)} />
+                          <div className="ddpanel" role="listbox" aria-multiselectable="true" aria-label="Filtrer par tags">
+                            {tags.defs.map((t) => {
+                              const on = tagFilter.includes(t.id);
+                              const count = songs.filter((s) => hasTag(s, t.id)).length;
+                              return (
+                                <button key={t.id} role="option" aria-selected={on}
+                                  className={"ddopt" + (on ? " on" : "")}
+                                  style={on ? { color: tagInk(t.color, theme === "light") } : undefined}
+                                  onClick={() => setTagFilter((f) => (on ? f.filter((x) => x !== t.id) : [...f, t.id]))}>
+                                  <span>{t.icon}</span><span>{t.label}</span>
+                                  <b>{count}</b>
+                                  <span className="ddcheck">{on ? "✓" : ""}</span>
+                                </button>
+                              );
+                            })}
+                            {tagFilter.length > 0 && (
+                              <button className="ddopt ddclear" onClick={() => setTagFilter([])}>Tout voir</button>
+                            )}
+                          </div>
+                        </>
                       )}
                     </div>
                   )}
                 </div>
             )}
-            {songs.length > 1 && (
-              <div className="toolrow">
-                <div className="seg2">
-                  {[["title", "Titre"], ["artist", "Artiste"], ["memo", "Note"]].map(([k, lab]) => (
-                    <button key={k} className={sort === k ? "on" : ""} aria-pressed={sort === k}
-                      title={sort === k
-                        ? (sortDir === "asc" ? "Inverser : ordre descendant" : "Inverser : ordre ascendant")
-                        : k === "memo" ? "Trier par note d'apprentissage — les moins connues d'abord" : undefined}
-                      onClick={() => {
-                        if (sort === k) setSortDir(sortDir === "asc" ? "desc" : "asc");
-                        else { setSort(k); setSortDir("asc"); }
-                      }}>
-                      {lab}{sort === k && <i className="sortdir">{sortDir === "asc" ? "↑" : "↓"}</i>}
-                    </button>
-                  ))}
-                </div>
+            {songs.length > 0 && (
+              <div className="sortrow">
+                {songs.length > 1 && (
+                  <div className="seg2">
+                    {[["title", "Titre"], ["artist", "Artiste"], ["memo", "Note"]].map(([k, lab]) => (
+                      <button key={k} className={sort === k ? "on" : ""} aria-pressed={sort === k}
+                        title={sort === k
+                          ? (sortDir === "asc" ? "Inverser : ordre descendant" : "Inverser : ordre ascendant")
+                          : k === "memo" ? "Trier par note d'apprentissage — les moins connues d'abord" : undefined}
+                        onClick={() => {
+                          if (sort === k) setSortDir(sortDir === "asc" ? "desc" : "asc");
+                          else { setSort(k); setSortDir("asc"); }
+                        }}>
+                        {lab}{sort === k && <i className="sortdir">{sortDir === "asc" ? "↑" : "↓"}</i>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <p className="count">{filtered.length} / {songs.length} chanson{songs.length > 1 ? "s" : ""}</p>
               </div>
             )}
-            {songs.length > 1 && (
-              <div className="actrow">
-                <button className="btn slim" onClick={openRandom}
-                  title="Une chanson au hasard, en privilégiant les mieux connues — pour jouer">🎲 Jouer</button>
-                <button className="btn slim" onClick={openReviseRandom}
-                  title="Une chanson au hasard, en privilégiant les moins connues — la révision démarre aussitôt">🎓 Réviser</button>
-                <button className="btn slim" onClick={askQuiz}
-                  title="Une ligne au hasard d'une chanson au hasard — l'aviez-vous en tête ? Les scores se mettent à jour en jouant">❓ Quiz</button>
-              </div>
-            )}
+          </div>
+          <div className="lib">
             {status && (
               <div className="notice">
                 <button className="noticeclose" title="Fermer" aria-label="Fermer le message"
@@ -2945,7 +3009,6 @@ export default function Carnet() {
                 )}
               </div>
             )}
-            {songs.length > 0 && <p className="count">{filtered.length} / {songs.length} chanson{songs.length > 1 ? "s" : ""}</p>}
             {!ready && <p className="hint">Chargement…</p>}
             {ready && songs.length === 0 && (
               <div className="empty">
@@ -2999,6 +3062,17 @@ export default function Carnet() {
               );
             })}
           </div>
+          </div>
+          {songs.length > 1 && (
+            <div className={"floatbar" + (libScrolled ? " hide" : "")}>
+              <button className="btn slim" onClick={openRandom}
+                title="Une chanson au hasard, en privilégiant les mieux connues — pour jouer">🎲 Jouer</button>
+              <button className="btn slim" onClick={openReviseRandom}
+                title="Une chanson au hasard, en privilégiant les moins connues — la révision démarre aussitôt">🎓 Réviser</button>
+              <button className="btn slim" onClick={askQuiz}
+                title="Une ligne au hasard d'une chanson au hasard — l'aviez-vous en tête ? Les scores se mettent à jour en jouant">❓ Quiz</button>
+            </div>
+          )}
           {quizAsk && (
             <div className="modal" role="dialog" aria-modal="true" aria-label="Lancer un quiz"
               onClick={(e) => { if (e.target === e.currentTarget) setQuizAsk(false); }}>
