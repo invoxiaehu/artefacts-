@@ -112,7 +112,7 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 ### Doctrine UX (choix validés par l'utilisateur)
 
 - Barre du haut de la chanson : actions globales fréquentes en boutons
-  icônes (⏭ suivante, 🎓 réviser, ♯ accords, 🎼 diagrammes, ▶/⏸ défilement),
+  icônes (▶/⏸ défilement, ⏭ suivante, 🎓 réviser, ♯ accords, 🎼 diagrammes),
   puis Apple Music **en dernier** — c'est une sortie de l'app, pas une action
   sur la chanson. État actif = fond ambre. Menu dépliant : uniquement le par-chanson
   (tags, listes, note « Appris », tonalité, Modifier, Supprimer). Réglages

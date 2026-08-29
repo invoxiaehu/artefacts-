@@ -3094,6 +3094,11 @@ export default function Carnet() {
           <>
             <button className="iconbtn glyph back" title="Retour" onClick={leaveSong}>‹</button>
             <div className="spacer" />
+            {/* Défilement puis chanson suivante en tête : les deux commandes de
+                transport, dans l'ordre où l'on s'en sert en jouant. */}
+            <button className={"iconbtn" + (scrolling ? " on" : "")} aria-pressed={scrolling}
+              title={scrolling ? "Arrêter le défilement automatique" : "Défilement automatique"}
+              onClick={() => setScrolling(!scrolling)}>{scrolling ? "⏸" : "▶"}</button>
             {songs.length > 1 && (
               <button className="iconbtn glyph next" onClick={openRandom}
                 title="Chanson suivante — tirée dans le même vivier, les mieux connues sortent plus souvent">⏭</button>
@@ -3107,9 +3112,6 @@ export default function Carnet() {
             <button className="iconbtn" disabled={!showChords || !events.length}
               title="Accords un par un, en diagrammes guitare ou piano"
               onClick={() => openFlow(0)}>🎼</button>
-            <button className={"iconbtn" + (scrolling ? " on" : "")} aria-pressed={scrolling}
-              title={scrolling ? "Arrêter le défilement automatique" : "Défilement automatique"}
-              onClick={() => setScrolling(!scrolling)}>{scrolling ? "⏸" : "▶"}</button>
             {/* Apple Music en dernier : c'est la sortie de l'app, pas une action
                 sur la chanson — elle mérite le bord, après les outils de jeu. */}
             <a className="iconbtn" href={amLink(current)} target="_blank" rel="noopener noreferrer"
