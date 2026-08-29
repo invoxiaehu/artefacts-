@@ -174,10 +174,13 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   mécanique et les identifiants `quiz*` du code restent. L'ancien bouton
   Réviser de la palette (tirage pondéré + révision de la chanson entière) a
   été retiré ; `openReviseRandom` sert toujours au ⏭ de la barre de révision
-  et au popup de fin de session. Boutons à 54 px de haut, icône dans un `<i>`
-  à 23 px : c'est le pouce qui vise. Fond et bord écrits dans
-  `.floatbar .btn` — le reset `.cb button` est **plus spécifique** que `.btn`
-  et efface les siens ; sans ça les deux touches se fondent en un bloc.
+  et au popup de fin de session. Plateau à 303 px sur 375, touches de
+  139 × 54, icône dans un `<i>` à 23 px : c'est le pouce qui vise. Les deux
+  touches restent d'égale largeur grâce à `flex:1 1 0` + `min-width:0` (en
+  `flex:1` seul, la plus longue impose sa taille et l'autre rétrécit). Fond
+  et bord écrits dans `.floatbar .btn` — le reset `.cb button` est **plus
+  spécifique** que `.btn` et efface les siens ; sans ça les deux touches se
+  fondent en un bloc.
 - Tirage pondéré : 🎹 Jouer `2^memo` (les mieux connues), et `2^(5−memo)`
   (les moins connues) pour `openReviseRandom` — toujours sur `filtered`
   (recherche + tags + liste active).
