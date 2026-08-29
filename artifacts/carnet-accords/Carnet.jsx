@@ -1311,9 +1311,17 @@ const CSS = `
 .libhead { position:sticky; top:0; z-index:10; background:var(--bg);
   padding:12px 16px 10px; border-bottom:1px solid var(--line); }
 .lib { padding:12px 16px calc(150px + var(--sab)); }
-.search { width:100%; padding:11px 13px; border-radius:10px; border:1px solid var(--line); background:var(--panel);
-  color:var(--ink); font-size:16px; }
+.search { width:100%; padding:11px 44px 11px 13px; border-radius:10px; border:1px solid var(--line);
+  background:var(--panel); color:var(--ink); font-size:16px; }
 .search::placeholder { color:var(--muted); }
+/* Croix de vidage : elle n'apparaît qu'une fois le champ rempli, mais sa place
+   est réservée en permanence dans le padding du champ — le texte ne saute pas
+   au premier caractère tapé. Même glyphe et même gabarit que .noticeclose. */
+.searchwrap { position:relative; }
+.searchx { position:absolute; top:50%; right:6px; transform:translateY(-50%);
+  width:32px; height:32px; border-radius:8px; display:grid; place-items:center;
+  color:var(--muted); font-size:13px; line-height:1; }
+.searchx:hover { color:var(--ink); background:var(--acc-soft); }
 /* Filtres sur une ligne : la liste (2/3) puis le menu des tags (1/3). */
 .filterrow { display:flex; gap:8px; margin-top:10px; position:relative; }
 .filterrow .listsel { flex:2; }
@@ -2252,6 +2260,7 @@ export default function Carnet() {
   const amStopRef = useRef(false); // demande d'arrêt du scan Apple Music global
   const sheetRef = useRef(null);
   const fileRef = useRef(null);
+  const searchRef = useRef(null);
   const syncHashRef = useRef(false);
   const [libScrolled, setLibScrolled] = useState(false); // scroll en cours dans la bibliothèque — la palette flottante s'efface
   const libScrollTimer = useRef(0);
@@ -3211,8 +3220,16 @@ export default function Carnet() {
               compteur sur la suivante. Les actions vivent dans la palette
               flottante en bas. */}
           <div className="libhead">
-            <input className="search" value={query} placeholder="Chercher un titre, un artiste…"
-              onChange={(e) => setQuery(e.target.value)} />
+            <div className="searchwrap">
+              <input ref={searchRef} className="search" value={query} placeholder="Chercher un titre, un artiste…"
+                onChange={(e) => setQuery(e.target.value)} />
+              {/* Vidé, on rend la main au champ : c'est ce que fait toute barre
+                  de recherche iOS, on peut relancer une requête dans la foulée. */}
+              {query && (
+                <button className="searchx" title="Vider la recherche" aria-label="Vider la recherche"
+                  onClick={() => { setQuery(""); searchRef.current?.focus(); }}>✕</button>
+              )}
+            </div>
             {songs.length > 0 && (
                 <div className="filterrow">
                   <select className="listsel" value={activeList} aria-label="Liste affichée"
