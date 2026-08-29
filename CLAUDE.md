@@ -168,9 +168,19 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   valeur non arrondie gardée dans `memoLiveRef` pendant la session — seul
   `song.memo` est arrondi (une décimale, jamais 0). Clavier : → savais,
   ← savais pas, Espace/Entrée/↓ = première révélation seulement.
-- Tirages pondérés : 🎹 Jouer `2^memo` (les mieux connues), 🎓 Réviser
-  `2^(5−memo)` (les moins connues, révision lancée à l'ouverture) —
-  toujours sur `filtered` (recherche + tags + liste active).
+- **Palette flottante de la liste : deux boutons, 🎹 Jouer et 🎓 Réviser.**
+  « Réviser » y est l'ancien mode Quiz (`askQuiz` / `startQuiz`) — décision
+  utilisateur : le mot « quiz » et son ❓ ont disparu de l'interface, la
+  mécanique et les identifiants `quiz*` du code restent. L'ancien bouton
+  Réviser de la palette (tirage pondéré + révision de la chanson entière) a
+  été retiré ; `openReviseRandom` sert toujours au ⏭ de la barre de révision
+  et au popup de fin de session. Boutons à 54 px de haut, icône dans un `<i>`
+  à 23 px : c'est le pouce qui vise. Fond et bord écrits dans
+  `.floatbar .btn` — le reset `.cb button` est **plus spécifique** que `.btn`
+  et efface les siens ; sans ça les deux touches se fondent en un bloc.
+- Tirage pondéré : 🎹 Jouer `2^memo` (les mieux connues), et `2^(5−memo)`
+  (les moins connues) pour `openReviseRandom` — toujours sur `filtered`
+  (recherche + tags + liste active).
 - File de lecture (`queue = { ids, random }`, état non persisté) : ce dans
   quoi ⏭ et le glissé vers la gauche avancent. Taper une chanson dans la
   liste fige `filtered` — **ordre affiché, tri et filtres compris** — sans
@@ -180,7 +190,7 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   mode ordre la fin de la file revient au début ; `hasNext` désactive ⏭ (et
   neutralise le glissé) quand la file se réduit à la chanson courante. File
   vide (chanson ouverte par un import ou un partage) : repli sur `filtered`.
-- Mode Quiz (bouton ❓ de la liste) : tirage **uniforme** d'une chanson de
+- Mode Quiz — « Réviser » dans l'interface, bouton 🎓 de la liste : tirage **uniforme** d'une chanson de
   `filtered` (décision utilisateur — pas de pondération), puis d'une unité
   (`reviseMode === "quiz"`, contexte visible avant l'unité tirée) ; Révéler
   → Savais/Savais pas (même EMA) → chanson suivante, ■ Stop → score de la
@@ -188,7 +198,7 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   ré-armement passe par `pendingQuizRef` + nonce `quizQ` (obligatoire quand
   le hasard retombe sur la même chanson) ; les chansons sans paroles
   croisées en route vont dans `quizDeadRef`.
-- Lancement du quiz : ❓ ouvre d'abord un popup de vivier — « Toutes » ou
+- Lancement : le 🎓 de la liste ouvre d'abord un popup de vivier — « Toutes » ou
   « Les moins connues » avec un seuil d'étoiles (`quizScope`, `quizMax` ;
   note ≤ seuil, une chanson non notée compte pour 0 donc toujours dedans).
   Le vivier retenu est **figé en ids** dans `quizPoolRef` au démarrage :
