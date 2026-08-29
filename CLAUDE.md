@@ -168,9 +168,18 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   valeur non arrondie gardée dans `memoLiveRef` pendant la session — seul
   `song.memo` est arrondi (une décimale, jamais 0). Clavier : → savais,
   ← savais pas, Espace/Entrée/↓ = première révélation seulement.
-- Tirages pondérés : 🎲 Jouer `2^memo` (les mieux connues), 🎓 Réviser
+- Tirages pondérés : 🎹 Jouer `2^memo` (les mieux connues), 🎓 Réviser
   `2^(5−memo)` (les moins connues, révision lancée à l'ouverture) —
   toujours sur `filtered` (recherche + tags + liste active).
+- File de lecture (`queue = { ids, random }`, état non persisté) : ce dans
+  quoi ⏭ et le glissé vers la gauche avancent. Taper une chanson dans la
+  liste fige `filtered` — **ordre affiché, tri et filtres compris** — sans
+  hasard ; le popup 🎹 Jouer fige `playPool` avec son basculeur « Au hasard /
+  Dans l'ordre » (`playRandom`, hasard par défaut). Ids figés comme
+  `quizPoolRef` : noter une chanson en route ne réordonne pas la file. En
+  mode ordre la fin de la file revient au début ; `hasNext` désactive ⏭ (et
+  neutralise le glissé) quand la file se réduit à la chanson courante. File
+  vide (chanson ouverte par un import ou un partage) : repli sur `filtered`.
 - Mode Quiz (bouton ❓ de la liste) : tirage **uniforme** d'une chanson de
   `filtered` (décision utilisateur — pas de pondération), puis d'une unité
   (`reviseMode === "quiz"`, contexte visible avant l'unité tirée) ; Révéler

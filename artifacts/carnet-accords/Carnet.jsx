@@ -2215,6 +2215,14 @@ export default function Carnet() {
   const [playScope, setPlayScope] = useState("all"); // "all" = tout l'affichage | "known" = au-dessus du seuil d'étoiles
   const [playMin, setPlayMin] = useState(3); // seuil du vivier « mieux connues » (note ≥ seuil)
   const [playTags, setPlayTags] = useState([]); // tags exigés pour le tirage — en plus des filtres de la liste
+  const [playRandom, setPlayRandom] = useState(true); // « Jouer » : au hasard, ou le vivier dans l'ordre
+  /* File de lecture : ce dans quoi ⏭ (et le glissé vers la gauche) avancent.
+     Figée en ids à l'entrée dans la chanson, comme le vivier du quiz — noter
+     une chanson en cours de route ne doit pas réordonner la file sous les
+     doigts. Depuis la liste : l'ordre affiché, recherche, tags, liste et tri
+     compris, et sans hasard. Depuis « Jouer » : le vivier choisi, dans l'ordre
+     ou au hasard selon le popup. Non persistée — carnet:v4 ne bouge pas. */
+  const [queue, setQueue] = useState({ ids: [], random: false });
   const [quizScope, setQuizScope] = useState("all"); // "all" = tout l'affichage | "weak" = sous le seuil d'étoiles
   const [quizMax, setQuizMax] = useState(3); // seuil du vivier « moins connues » (note ≤ seuil)
   const [quizDetail, setQuizDetail] = useState(false); // détail avant → après déplié en fin de partie
@@ -2371,7 +2379,7 @@ export default function Carnet() {
   // natif, abonné une seule fois, appelle toujours la version fraîche.
   const swipeRef = useRef({});
   useEffect(() => {
-    swipeRef.current = { back: leaveSong, next: songs.length > 1 ? openRandom : null };
+    swipeRef.current = { back: leaveSong, next: hasNext ? openNext : null };
   });
 
   // Gestes sur la feuille, tous branchés au même endroit :
@@ -2766,6 +2774,9 @@ export default function Carnet() {
     setCurrentId(id); setView("song"); setScrolling(false); setReviseMode(null); setRevealed(0); setJudged(0); setFlowIndex(null); setMemoPrompt(false);
     requestAnimationFrame(() => sheetRef.current && (sheetRef.current.scrollTop = 0));
   };
+  // Taper une chanson dans la liste : la file de lecture devient la liste
+  // telle qu'elle s'affiche, dans son ordre — c'est elle que ⏭ suivra.
+  const openFromList = (id) => { setQueue({ ids: filtered.map((s) => s.id), random: false }); openSong(id); };
   const startNew = () => { setCurrentId(null); setDraft({ title: "", artist: "", body: "" }); setView("edit"); };
   const startEdit = () => { setDraft({ title: current.title, artist: current.artist, body: current.body }); setView("edit"); };
   const save = () => {
@@ -2829,11 +2840,40 @@ export default function Carnet() {
     return pool;
   }, [filtered, playTags, playScope, playMin, tags]);
   const askPlay = () => { if (filtered.length) setPlayAsk(true); };
-  const openRandom = () => {
-    const pick = weightedDraw(drawPool(playPool), (s) => 2 ** (s.memo || 0));
+  const startPlay = () => {
+    setPlayAsk(false);
+    setQueue({ ids: playPool.map((s) => s.id), random: playRandom });
+    // Au hasard : le premier tirage évite la chanson déjà ouverte. Dans
+    // l'ordre : on entre par le haut du vivier.
+    const pick = playRandom
+      ? (weightedDraw(playPool.filter((s) => s.id !== currentId), (s) => 2 ** (s.memo || 0)) || playPool[0])
+      : playPool[0];
     if (pick) openSong(pick.id);
   };
-  const startPlay = () => { setPlayAsk(false); openRandom(); };
+  /* La file, débarrassée des chansons supprimées entre-temps. Vide (chanson
+     ouverte par un import, un partage…) : on retombe sur la liste affichée,
+     pour que ⏭ ait toujours un sens. */
+  const queueIds = useMemo(() => {
+    const base = queue.ids.length ? queue.ids : filtered.map((s) => s.id);
+    return base.filter((id) => songs.some((s) => s.id === id));
+  }, [queue, filtered, songs]);
+  const hasNext = queueIds.some((id) => id !== currentId);
+  /* ⏭ : la chanson d'après dans la file. En mode ordre — le cas normal, celui
+     d'une chanson tapée dans la liste — c'est la voisine du dessous, et la fin
+     de la file revient au début. En mode hasard, tirage pondéré par la note
+     dans le vivier, comme « Jouer » l'a demandé. */
+  const openNext = () => {
+    if (!hasNext) return;
+    if (queue.random) {
+      const pick = weightedDraw(songs.filter((s) => s.id !== currentId && queueIds.includes(s.id)),
+        (s) => 2 ** (s.memo || 0));
+      if (pick) openSong(pick.id);
+      return;
+    }
+    const i = queueIds.indexOf(currentId);
+    const id = queueIds[(i + 1) % queueIds.length];
+    if (id && id !== currentId) openSong(id);
+  };
   // Sortie de la chanson : le ‹ de la barre du haut et le glissé vers la droite
   // mènent au même endroit — en quiz, la partie s'arrête et le score s'affiche.
   const leaveSong = () => { setScrolling(false); if (quiz) stopQuiz(); else setView("lib"); };
@@ -2841,6 +2881,9 @@ export default function Carnet() {
     const pick = weightedDraw(drawPool(), (s) => 2 ** (5 - (s.memo || 0)));
     if (!pick) return;
     pendingReviseRef.current = true;
+    // Le tirage de révision a son propre bouton dans la barre du bas ; ⏭ reste
+    // une navigation, donc la file est celle de la liste, dans l'ordre.
+    setQueue({ ids: filtered.map((s) => s.id), random: false });
     openSong(pick.id);
   };
   /* Quiz : une ligne au hasard d'une chanson au hasard de la sous-liste
@@ -3100,8 +3143,10 @@ export default function Carnet() {
               title={scrolling ? "Arrêter le défilement automatique" : "Défilement automatique"}
               onClick={() => setScrolling(!scrolling)}>{scrolling ? "⏸" : "▶"}</button>
             {songs.length > 1 && (
-              <button className="iconbtn glyph next" onClick={openRandom}
-                title="Chanson suivante — tirée dans le même vivier, les mieux connues sortent plus souvent">⏭</button>
+              <button className="iconbtn glyph next" onClick={openNext} disabled={!hasNext}
+                title={queue.random
+                  ? "Chanson suivante — tirée au hasard dans le vivier, les mieux connues sortent plus souvent"
+                  : "Chanson suivante — dans l'ordre de la liste"}>⏭</button>
             )}
             <button className={"iconbtn" + (reviseMode ? " on" : "")} aria-pressed={!!reviseMode} disabled={!revealables}
               title={quiz ? "Arrêter le quiz" : reviseMode ? "Quitter la révision" : "Réviser — paroles cachées, révélées ligne à ligne"}
@@ -3277,7 +3322,7 @@ export default function Carnet() {
               const marks = tagsOf(s);
               return (
               <div className="card" key={s.id}>
-                <button className="cardmain" onClick={() => openSong(s.id)}>
+                <button className="cardmain" onClick={() => openFromList(s.id)}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <h3>{s.title}</h3>
                     <p>{s.artist || "Artiste inconnu"}</p>
@@ -3306,7 +3351,7 @@ export default function Carnet() {
           {songs.length > 1 && (
             <div className={"floatbar" + (libScrolled ? " hide" : "")}>
               <button className="btn slim" onClick={askPlay}
-                title="Une chanson au hasard, en privilégiant les mieux connues — pour jouer">🎹 Jouer</button>
+                title="Enchaîner les chansons — au hasard en privilégiant les mieux connues, ou le vivier dans l'ordre">🎹 Jouer</button>
               <button className="btn slim" onClick={openReviseRandom}
                 title="Une chanson au hasard, en privilégiant les moins connues — la révision démarre aussitôt">🎓 Réviser</button>
               <button className="btn slim" onClick={askQuiz}
@@ -3319,7 +3364,9 @@ export default function Carnet() {
               <div className="modalbox">
                 <div className="modalicon">🎹</div>
                 <h2>Jouer</h2>
-                <p>Une chanson au hasard — les mieux connues sortent plus souvent.</p>
+                <p>{playRandom
+                  ? "Une chanson au hasard — les mieux connues sortent plus souvent."
+                  : "Le vivier entier, l'une après l'autre, dans l'ordre de la liste."}</p>
                 {tags.defs.length > 0 && (
                   <div className="tagpick center">
                     {tags.defs.map((t) => {
@@ -3348,10 +3395,20 @@ export default function Carnet() {
                     <Stars value={playMin} onChange={(n) => setPlayMin(n || 1)} />
                   </>
                 )}
+                {/* Hasard ou ordre : le réglage vaut pour le premier départ et
+                    pour tous les ⏭ qui suivront — la file s'en souvient. */}
+                <div className="seg2 wide">
+                  <button className={playRandom ? "on" : ""} aria-pressed={playRandom}
+                    title="Tirage pondéré par la note, à chaque chanson suivante"
+                    onClick={() => setPlayRandom(true)}>Au hasard</button>
+                  <button className={!playRandom ? "on" : ""} aria-pressed={!playRandom}
+                    title="Le vivier entier, l'une après l'autre, dans l'ordre de la liste"
+                    onClick={() => setPlayRandom(false)}>Dans l'ordre</button>
+                </div>
                 <p className="modalcount">
                   {playPool.length === 0
                     ? "Aucune chanson dans ce vivier"
-                    : `${playPool.length} chanson${playPool.length > 1 ? "s" : ""} dans le tirage`}
+                    : `${playPool.length} chanson${playPool.length > 1 ? "s" : ""} ${playRandom ? "dans le tirage" : "dans la file"}`}
                   {playPool.length > 0 && playPool.length < filtered.length && ` sur ${filtered.length}`}
                 </p>
                 <div className="actions" style={{ justifyContent: "center" }}>
