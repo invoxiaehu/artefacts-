@@ -1341,16 +1341,19 @@ const CSS = `
    manche : 54 px, au-dessus des 44 pt d'Apple. */
 .floatbar { position:absolute; left:50%; transform:translateX(-50%);
   bottom:calc(76px + var(--sab)); z-index:6; display:flex; gap:8px; padding:8px;
-  width:calc(100% - 24px); max-width:420px; border-radius:18px; background:var(--bg);
+  /* Deux touches seulement : plus besoin de toute la largeur, on rentre les
+     épaules. Le plancher garde « Réviser » entier (nowrap) sur un 320 px. */
+  width:calc(100% - 72px); min-width:min(296px, calc(100% - 16px)); max-width:420px;
+  border-radius:18px; background:var(--bg);
   border:1px solid var(--line); box-shadow:0 8px 28px rgba(0,0,0,.4); transition:opacity .3s; }
 /* Le plateau prend le fond de la page, les touches montent d'un cran au-dessus :
    sans ce contraste, deux boutons voisins se fondent en un seul bloc et on ne
    voit plus où viser. En clair, c'est --panel (blanc) qui fait ce cran.
    Fond et bord sont écrits ici, et non hérités de .btn : le reset .cb button
    (background:none, border:none) est plus spécifique que .btn et les efface. */
-.floatbar .btn { flex:1; min-height:54px; padding:0 12px; font-size:16.5px; white-space:nowrap;
-  border-radius:12px; background:var(--panel2); border:1px solid var(--line);
-  display:flex; align-items:center; justify-content:center; gap:9px; }
+.floatbar .btn { flex:1 1 0; min-width:0; min-height:54px; padding:0 8px; font-size:16.5px;
+  white-space:nowrap; border-radius:12px; background:var(--panel2); border:1px solid var(--line);
+  display:flex; align-items:center; justify-content:center; gap:8px; }
 .floatbar .btn i { font-style:normal; font-size:23px; line-height:1; }
 .floatbar.hide { opacity:0; pointer-events:none; }
 .cb.light .floatbar { box-shadow:0 8px 28px rgba(0,0,0,.18); }
