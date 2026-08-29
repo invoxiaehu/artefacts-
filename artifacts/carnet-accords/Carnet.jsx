@@ -160,7 +160,7 @@ function extractionStats(text) {
 }
 
 function namesFromFile(filename) {
-  const base = filename.replace(/\.(pdf|pro|chopro|chordpro|cho|crd)$/i, "").replace(/_/g, " ");
+  const base = filename.replace(/\.(pdf|pro|chopro|chordpro|cho|crd|txt)$/i, "").replace(/_/g, " ");
   const parts = base.split(/\s+-\s+/).map((s) => s.trim()).filter(Boolean);
   const clean = parts.filter((p) => !/^(chords?|tabs?|lyrics?|accords?|paroles?)$/i.test(p));
   if (clean.length >= 2) return { artist: clean[0], title: clean.slice(1).join(" – ") };
@@ -2588,12 +2588,24 @@ export default function Carnet() {
     for (const file of Array.from(files)) {
       try {
         const isPro = /\.(pro|chopro|chordpro|cho|crd)$/i.test(file.name);
+        const isTxt = /\.txt$/i.test(file.name);
+        const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
         let body, meta = null;
-        if (isPro) {
-          meta = chordProToBody(await file.text());
-          body = meta.body;
-        } else {
+        if (isPro || isTxt) {
+          const raw = await file.text();
+          // Un .txt n'est converti que s'il contient des directives ChordPro ;
+          // sinon c'est déjà du texte accords-au-dessus-des-paroles — le
+          // format du carnet, importé tel quel (équivalent d'un collage).
+          if (isPro || /\{\s*[\w-]+\s*(?::[^}]*)?\}/.test(raw)) {
+            meta = chordProToBody(raw);
+            body = meta.body;
+          } else {
+            body = raw;
+          }
+        } else if (isPdf) {
           body = await pdfToText(file);
+        } else {
+          throw new Error("format non pris en charge — PDF, ChordPro (.pro) ou texte (.txt)");
         }
         const st = extractionStats(body);
         if (!st.lines) throw new Error(isPro ? "fichier vide ou sans contenu ChordPro" : "aucun texte : PDF probablement scanné (image)");
@@ -2984,7 +2996,11 @@ export default function Carnet() {
   return (
     <div className={"cb" + (theme === "light" ? " light" : "")}>
       <style>{CSS}</style>
-      <input ref={fileRef} type="file" accept="application/pdf,.pdf,.pro,.chopro,.chordpro,.cho,.crd" multiple
+      {/* Pas d'attribut accept : le sélecteur iOS filtre par types déclarés
+          au système, et .pro n'en a pas — les fichiers ChordPro sortiraient
+          grisés. Tout est sélectionnable, l'extension est validée à la
+          lecture avec une erreur claire par fichier. */}
+      <input ref={fileRef} type="file" multiple
         className="vhide" tabIndex={-1} aria-hidden="true"
         onChange={(e) => { importFiles(e.target.files); e.target.value = ""; }} />
 
