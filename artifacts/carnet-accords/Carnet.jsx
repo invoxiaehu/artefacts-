@@ -1639,6 +1639,16 @@ const CSS = `
 .stepper span { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em; color:var(--muted); padding:0 8px;
   text-transform:uppercase; min-width:70px; text-align:center; }
 .stepper span b { color:var(--ink); font-weight:700; }
+/* Repère de lecture : matérialise le tiers haut où se tient la ligne
+   chantée pendant le défilement synchronisé — on glisse la feuille pour
+   poser une parole dessus et se recaler dans la chanson. Collant dans la
+   feuille (sticky), il ne défile pas avec le texte. */
+.readguide { position:sticky; top:35%; height:0; z-index:3; pointer-events:none; }
+.readguide::before { content:""; display:block; }
+.readguide.band::before { height:1.9em; margin:-0.25em -6px 0;
+  background:linear-gradient(180deg, transparent, var(--acc-faint) 30%, var(--acc-faint) 70%, transparent);
+  border-radius:8px; }
+.readguide.line::before { height:0; margin:0 -6px; border-top:1.5px solid var(--acc-soft); }
 /* Retour au mode Auto dans la pilule Vitesse : un libellé, pas un cran. */
 .stepper button.autobtn { width:auto; padding:0 10px; font-family:'JetBrains Mono'; font-size:10px;
   letter-spacing:.1em; text-transform:uppercase; color:var(--amber); border-left:1px solid var(--line); }
@@ -3970,6 +3980,9 @@ export default function Carnet() {
             onTouchStart={() => { draggingRef.current = true; clearTimeout(resumeRef.current); }}
             onTouchEnd={() => { clearTimeout(resumeRef.current); resumeRef.current = setTimeout(() => { draggingRef.current = false; }, 700); }}
           >
+            {scrolling && !reviseMode && autoScroll && lrcLines && (
+              <div className="readguide band" style={{ fontSize: size }} aria-hidden="true" />
+            )}
             {sizeFly && (
               <div className="sizefly" aria-live="polite"><span>Taille <b>{size}</b></span></div>
             )}
