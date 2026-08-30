@@ -86,6 +86,13 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   steps, memo?, memoAuto? }` (`memo` 0.1–5, **une décimale**, absent si 0 ;
   `memoAuto: true` = score écrit par le scoring automatique, effacé par un
   réglage manuel aux étoiles — qui passe par un `confirm` d'avertissement).
+  Champs mémoïsés par recherche externe : `am` (piste Apple Music, ou
+  `{ none:true }`) et `lrc` (`{ dur }` en secondes venu de LRCLIB, ou
+  `{ none:true }`) — `lrc` voyage dans l'URL de partage, `am` non. Le
+  défilement ▶ se cale sur `lrc.dur` (toute la grille défile pendant la
+  durée réelle) ; premier ▶ sans `lrc` = recherche automatique ; pilule
+  Vitesse en « Auto », débrayable (« / » → cran manuel équivalent ±1,
+  bouton Auto pour revenir).
 - Les **ids de chansons sont régénérés à chaque import** : tags (`tags:v1`)
   et listes (`lists:v1`) sont ancrés par `songKey` (titre|artiste
   normalisés) et suivent un renommage via `moveTags`/`moveLists`.

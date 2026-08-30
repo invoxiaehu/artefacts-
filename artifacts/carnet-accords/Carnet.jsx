@@ -684,6 +684,9 @@ function normalizeLibrary(data) {
       // vraisemblable (amNorm) — il arrive par la sauvegarde en fichier,
       // l'URL de partage ne le transporte pas.
       ...(amNorm(s.am) ? { am: amNorm(s.am) } : {}),
+      // Durée LRCLIB : quelques octets, elle voyage partout (URL de
+      // partage comprise) — la vitesse de défilement suit le carnet.
+      ...(lrcNorm(s.lrc) ? { lrc: lrcNorm(s.lrc) } : {}),
     }));
   if (!songs.length) throw new Error("aucune grille exploitable");
   const lib = { songs };
@@ -1209,6 +1212,107 @@ const amLink = (s) => (s.am && s.am.url)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* ------------------------------------------------------------------ */
+/* LRCLIB — durée des chansons (https://lrclib.net, service public de  */
+/* paroles synchronisées, sans compte ni clé, CORS ouvert). On n'en    */
+/* retient que la durée : le défilement ▶ se cale dessus pour parcourir */
+/* toute la grille pendant la vraie durée de la chanson. Même doctrine */
+/* qu'Apple Music : jamais de recherche à l'affichage, résultat        */
+/* mémorisé une fois pour toutes dans la chanson (champ lrc : { dur }  */
+/* en secondes, ou { none:true }).                                     */
+/* ------------------------------------------------------------------ */
+
+const LRC_API = "https://lrclib.net/api/";
+
+/** GET JSON direct (pas de miroir : le CORS de LRCLIB est ouvert).
+ *  404 = « pas trouvé », rendu null ; toute autre panne est levée. */
+async function lrcFetch(path, params, ms = 12000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(LRC_API + path + "?" + new URLSearchParams(params), {
+      signal: ctrl.signal,
+      // En-tête d'identification demandé par LRCLIB (autorisé par son CORS).
+      headers: { "Lrclib-Client": "carnet-accords (https://invoxiaehu.github.io/artefacts-/)" },
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally { clearTimeout(t); }
+}
+
+/** Score d'un résultat LRCLIB contre notre titre/artiste — même logique
+ *  que scoreMatch, adaptée : beaucoup de grilles n'ont pas d'artiste, et
+ *  un titre exact suffit alors ; les versions parasites (live, acoustic…)
+ *  restent disqualifiées, leur durée n'est pas celle qu'on joue. */
+function lrcScore(r, title, artist) {
+  const tL = fold(title), tLl = foldLoose(title);
+  const tR = fold(r.trackName), tRl = foldLoose(r.trackName);
+  let tScore;
+  if (tL && tR === tL) tScore = 50;
+  else if (tLl && tRl === tLl) tScore = 45;
+  else if (tLl && tRl && (tRl.startsWith(tLl) || tLl.startsWith(tRl))) tScore = 25;
+  else tScore = Math.round(20 * wordOverlap(tRl, tLl));
+  const aL = fold(artist), aR = fold(r.artistName);
+  let aScore;
+  if (!aL) aScore = tScore >= 45 ? 40 : 0; // grille sans artiste : le titre exact porte seul
+  else if (aR === aL) aScore = 40;
+  else if (aR && (aR.includes(aL) || aL.includes(aR))) aScore = 28;
+  else if (wordOverlap(aR, aL) >= 0.5) aScore = 12;
+  else aScore = -35;
+  let s = tScore + aScore;
+  const hay = fold(`${r.trackName} ${r.albumName || ""}`);
+  for (const w of AM_BAD) if (hasWord(hay, w) && !hasWord(tL, w)) s -= 40;
+  return s;
+}
+
+/** Durée retenue : la médiane des candidats crédibles. Les entrées LRCLIB
+ *  de la même chanson diffèrent de quelques secondes (fondus, éditions) et
+ *  une entrée fantaisiste peut être très loin — la médiane tombe dans la
+ *  grappe des versions normales sans qu'on ait à choisir. */
+function lrcPickDuration(results, title, artist) {
+  const durs = (results || [])
+    .filter((r) => r && Number(r.duration) >= 30 && Number(r.duration) <= 3600)
+    .filter((r) => lrcScore(r, title, artist) >= AM_MAYBE)
+    .map((r) => Number(r.duration))
+    .sort((a, b) => a - b);
+  return durs.length ? Math.round(durs[Math.floor(durs.length / 2)]) : 0;
+}
+
+/** Recherche : l'appariement exact de LRCLIB d'abord (get), puis la
+ *  recherche plein-texte — les deux alimentent la même médiane. Échec des
+ *  deux voies → erreur explicite, l'appelant n'enregistre rien (jamais de
+ *  « non trouvé » sur panne, comme pour Apple Music). */
+async function lrcFind(title, artist) {
+  if (navigator.onLine === false) throw new Error("hors ligne");
+  const t = stripDecorRaw(title).replace(/\s+/g, " ").trim() || String(title || "").trim();
+  let candidates = [], reached = false;
+  try {
+    const exact = await lrcFetch("get", { track_name: t, artist_name: artist || "" });
+    reached = true;
+    if (exact) candidates.push(exact);
+  } catch { /* la recherche peut encore aboutir */ }
+  try {
+    const found = await lrcFetch("search", { q: `${t} ${artist || ""}`.trim() });
+    reached = true;
+    if (Array.isArray(found)) candidates = candidates.concat(found);
+  } catch { if (!reached) throw new Error("service injoignable"); }
+  const dur = lrcPickDuration(candidates, title, artist);
+  return dur ? { dur } : { none: true };
+}
+
+/** Champ lrc venu d'un import : durée plausible en secondes entières, ou
+ *  le marqueur « non trouvé » — tout le reste est abandonné (null). */
+function lrcNorm(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  if (raw.none === true) return { none: true };
+  const dur = Math.round(Number(raw.dur));
+  return dur >= 30 && dur <= 3600 ? { dur } : null;
+}
+
+/** Durée en minutes:secondes (« 3:52 »). */
+const fmtDur = (d) => `${Math.floor(d / 60)}:${String(Math.round(d) % 60).padStart(2, "0")}`;
+
 /** Score d'apprentissage : une décimale au plus, virgule française. */
 const fmtMemo = (m) => (Math.round(Number(m) * 10) / 10).toFixed(1).replace(/\.0$/, "").replace(".", ",");
 /** Jamais 0 (qui supprimerait la clé memo), jamais plus d'une décimale. */
@@ -1450,6 +1554,9 @@ const CSS = `
 .stepper span { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.1em; color:var(--muted); padding:0 8px;
   text-transform:uppercase; min-width:70px; text-align:center; }
 .stepper span b { color:var(--ink); font-weight:700; }
+/* Retour au mode Auto dans la pilule Vitesse : un libellé, pas un cran. */
+.stepper button.autobtn { width:auto; padding:0 10px; font-family:'JetBrains Mono'; font-size:10px;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--amber); border-left:1px solid var(--line); }
 /* touch-action:pan-y — seul le défilement vertical reste au navigateur. Le
    pincement revient à l'app (il règle la taille du texte, pas le zoom de page)
    et l'horizontale aussi : sans cela, un glissé latéral part en navigation
@@ -1599,6 +1706,7 @@ a.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px
 .cardam:hover { background:var(--acc-soft); }
 .amcell { display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }
 .amnone { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+.durval { font-family:'JetBrains Mono'; font-size:12px; color:var(--ink); white-space:nowrap; }
 .amlist { width:100%; }
 .amchoice { width:100%; text-align:left; border-radius:8px; }
 .amchoice:hover { background:var(--acc-soft); }
@@ -2258,6 +2366,11 @@ export default function Carnet() {
   const [amErr, setAmErr] = useState(null); // { id, msg } — échec de la dernière recherche unitaire
   const [amScan, setAmScan] = useState(null); // null | { done, total, found, ambiguous, missed, running, error? }
   const amStopRef = useRef(false); // demande d'arrêt du scan Apple Music global
+  const [lrcBusyId, setLrcBusyId] = useState(null); // recherche de durée LRCLIB en cours (id de chanson)
+  const [lrcErr, setLrcErr] = useState(null); // { id, msg } — échec de la dernière recherche de durée
+  const [lrcScan, setLrcScan] = useState(null); // null | { done, total, found, missed, running, error? }
+  const lrcStopRef = useRef(false); // demande d'arrêt du scan LRCLIB global
+  const [speedAuto, setSpeedAuto] = useState(true); // ▶ à la vitesse déduite de la durée quand elle est connue — non persisté
   const sheetRef = useRef(null);
   const fileRef = useRef(null);
   const searchRef = useRef(null);
@@ -2363,8 +2476,28 @@ export default function Carnet() {
     window.history.replaceState(null, "", hash);
   };
 
+  // Durée LRCLIB de la chanson affichée — calculée ici (et pas depuis
+  // `current`, déclaré plus bas) parce que l'effet de défilement s'en sert.
+  const lrcDur = (() => {
+    const s = songs.find((x) => x.id === currentId);
+    return (s && s.lrc && s.lrc.dur) || 0;
+  })();
+  const autoScroll = speedAuto && lrcDur > 0;
+  // Quitter le mode Auto par « ou » de la pilule : on repart du cran manuel
+  // le plus proche de la vitesse automatique en cours, ajusté d'un pas.
+  const leaveAuto = (dir) => {
+    const el = sheetRef.current;
+    const pps = el && lrcDur ? (el.scrollHeight - el.clientHeight) / lrcDur : speed * 9;
+    setSpeed(Math.max(1, Math.min(12, Math.round(pps / 9) + dir)));
+    setSpeedAuto(false);
+  };
+
   // Défilement : vitesse en pixels par seconde, indépendante du rafraîchissement.
   // Le doigt met la boucle en pause puis elle repart d'où l'on s'est arrêté.
+  // Quand la durée de la chanson est connue (LRCLIB) et le mode Auto actif,
+  // la vitesse est déduite : toute la grille défile pendant la durée réelle.
+  // Recalculée à chaque frame — le pincement qui change la taille de police
+  // en cours de route change la hauteur, la vitesse suit.
   useEffect(() => {
     if (!scrolling) return;
     let raf, last = null, carry = 0;
@@ -2376,7 +2509,10 @@ export default function Carnet() {
           carry = 0;
         } else {
           if (last !== null) {
-            carry += ((t - last) / 1000) * speed * 9;
+            const pps = autoScroll
+              ? Math.min(200, Math.max(2, (el.scrollHeight - el.clientHeight) / lrcDur))
+              : speed * 9;
+            carry += ((t - last) / 1000) * pps;
             const whole = Math.floor(carry);
             if (whole >= 1) {
               carry -= whole;
@@ -2391,7 +2527,7 @@ export default function Carnet() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [scrolling, speed]);
+  }, [scrolling, speed, autoScroll, lrcDur]);
 
   // Taille courante lisible depuis un écouteur natif, sans le réabonner à
   // chaque cran : seule la valeur au *début* du geste sert de référence.
@@ -3084,6 +3220,48 @@ export default function Carnet() {
       setAmErr({ id: song.id, msg: e && e.message === "hors ligne" ? "Hors ligne" : "Service injoignable" });
     } finally { setAmBusyId(null); }
   };
+  /* LRCLIB — même doctrine : uniquement sur un geste (menu de la chanson,
+     premier ▶ d'une chanson sans durée, scan des Réglages). */
+  const setLrc = (songId, lrc) => setSongs((prev) => prev.map((s) => {
+    if (s.id !== songId) return s;
+    if (!lrc) { const { lrc: dropped, ...rest } = s; return rest; }
+    return { ...s, lrc };
+  }));
+  const lrcSearchOne = async (song) => {
+    setLrcBusyId(song.id); setLrcErr(null);
+    try {
+      setLrc(song.id, await lrcFind(song.title, song.artist));
+    } catch (e) {
+      setLrcErr({ id: song.id, msg: e && e.message === "hors ligne" ? "Hors ligne" : "Service injoignable" });
+    } finally { setLrcBusyId(null); }
+  };
+  const lrcScanAll = async () => {
+    // Figé au départ ; les « non trouvé » repassent aussi, le catalogue
+    // LRCLIB s'enrichit d'un scan à l'autre.
+    const targets = songs.filter((s) => !s.lrc || s.lrc.none);
+    if (!targets.length || (lrcScan && lrcScan.running)) return;
+    lrcStopRef.current = false;
+    setLrcScan({ done: 0, total: targets.length, found: 0, missed: 0, running: true });
+    const bump = (k) => setLrcScan((p) => p && { ...p, [k]: p[k] + 1 });
+    for (let i = 0; i < targets.length; i++) {
+      if (lrcStopRef.current) break;
+      const s = targets[i];
+      try {
+        let r;
+        try { r = await lrcFind(s.title, s.artist); }
+        catch { await sleep(2000); r = await lrcFind(s.title, s.artist); } // une panne ponctuelle ne tue pas le scan
+        setLrc(s.id, r);
+        bump(r.dur ? "found" : "missed");
+      } catch (e) {
+        setLrcScan((p) => p && { ...p, running: false, error: String((e && e.message) || e).slice(0, 80) });
+        return;
+      }
+      bump("done");
+      if (i < targets.length - 1) await sleep(800); // courtoisie : LRCLIB est un service bénévole sans limite affichée
+    }
+    setLrcScan((p) => p && { ...p, running: false });
+  };
+
   const amScanAll = async () => {
     // Figé au départ : les ambigus restent à retenter. Les « non trouvé »
     // repassent aussi — le repli web peut les débloquer d'un scan à l'autre.
@@ -3118,6 +3296,7 @@ export default function Carnet() {
   // Réseau : offline est null dans un aperçu d'artefact — considéré en ligne.
   const online = !offline || offline.online !== false;
   const amMissing = songs.filter((s) => !s.am || s.am.none).length;
+  const lrcMissing = songs.filter((s) => !s.lrc || s.lrc.none).length;
   const offlineHint = !offline || !offline.supported
     ? "Indisponible ici : garder l'application en cache demande un service worker, donc une page servie en HTTPS — c'est le cas sur GitHub Pages, pas dans un aperçu d'artefact."
     : !offline.shell
@@ -3164,7 +3343,13 @@ export default function Carnet() {
                 transport, dans l'ordre où l'on s'en sert en jouant. */}
             <button className={"iconbtn" + (scrolling ? " on" : "")} aria-pressed={scrolling}
               title={scrolling ? "Arrêter le défilement automatique" : "Défilement automatique"}
-              onClick={() => setScrolling(!scrolling)}>{scrolling ? "⏸" : "▶"}</button>
+              onClick={() => {
+                // Premier ▶ d'une chanson sans durée : on la cherche en
+                // route — le défilement démarre en manuel et se cale de
+                // lui-même dès que la durée arrive.
+                if (!scrolling && !current.lrc && online && lrcBusyId !== current.id) lrcSearchOne(current);
+                setScrolling(!scrolling);
+              }}>{scrolling ? "⏸" : "▶"}</button>
             {songs.length > 1 && (
               <button className="iconbtn glyph next" onClick={openNext} disabled={!hasNext}
                 title={queue.random
@@ -3574,6 +3759,37 @@ export default function Carnet() {
                   )}
                 </div>
               </div>
+              <div className="mrow">
+                <span className="mlab">Durée</span>
+                <div className="amcell">
+                  {lrcErr && lrcErr.id === current.id && <span className="amnone">{lrcErr.msg}</span>}
+                  {current.lrc && current.lrc.dur ? (
+                    <>
+                      <span className="durval" title="Durée trouvée sur LRCLIB — le défilement ▶ se cale dessus">⏱ {fmtDur(current.lrc.dur)}</span>
+                      <button className="btn slim ghost" disabled={!online || lrcBusyId === current.id}
+                        title={online ? "Chercher à nouveau la durée sur LRCLIB" : "Hors ligne"}
+                        onClick={() => lrcSearchOne(current)}>
+                        {lrcBusyId === current.id ? "…" : "Actualiser"}
+                      </button>
+                    </>
+                  ) : current.lrc && current.lrc.none ? (
+                    <>
+                      {!(lrcErr && lrcErr.id === current.id) && <span className="amnone">Non trouvée</span>}
+                      <button className="btn slim ghost" disabled={!online || lrcBusyId === current.id}
+                        title={online ? "Relancer la recherche de durée" : "Hors ligne"}
+                        onClick={() => lrcSearchOne(current)}>
+                        {lrcBusyId === current.id ? "Recherche…" : "Réessayer"}
+                      </button>
+                    </>
+                  ) : (
+                    <button className="btn slim" disabled={!online || lrcBusyId === current.id}
+                      title={online ? "Chercher la durée de la chanson (LRCLIB) pour caler la vitesse du défilement ▶" : "Hors ligne"}
+                      onClick={() => lrcSearchOne(current)}>
+                      {lrcBusyId === current.id ? "Recherche…" : "⏱ Rechercher"}
+                    </button>
+                  )}
+                </div>
+              </div>
               <div className="mact">
                 <button className="btn slim" onClick={startEdit}>✎ Modifier</button>
                 <button className="btn slim danger" onClick={remove}>Supprimer</button>
@@ -3607,9 +3823,13 @@ export default function Carnet() {
           {scrolling && !reviseMode && (
             <div className="speedfly">
               <div className="stepper">
-                <button onClick={() => setSpeed(Math.max(1, speed - 1))} title="Plus lent">«</button>
-                <span>Vitesse <b>{speed}</b></span>
-                <button onClick={() => setSpeed(Math.min(12, speed + 1))} title="Plus rapide">»</button>
+                <button onClick={() => (autoScroll ? leaveAuto(-1) : setSpeed(Math.max(1, speed - 1)))} title="Plus lent">«</button>
+                <span>Vitesse <b>{autoScroll ? "Auto" : speed}</b></span>
+                <button onClick={() => (autoScroll ? leaveAuto(+1) : setSpeed(Math.min(12, speed + 1)))} title="Plus rapide">»</button>
+                {lrcDur > 0 && !autoScroll && (
+                  <button className="autobtn" onClick={() => setSpeedAuto(true)}
+                    title="Revenir à la vitesse automatique (calée sur la durée de la chanson)">Auto</button>
+                )}
               </div>
             </div>
           )}
@@ -3939,6 +4159,40 @@ export default function Carnet() {
                   {amScan.error
                     ? `Interrompu (${amScan.error}) après ${amScan.done} chanson${amScan.done > 1 ? "s" : ""} examinée${amScan.done > 1 ? "s" : ""}.`
                     : `${amScan.done} chanson${amScan.done > 1 ? "s" : ""} examinée${amScan.done > 1 ? "s" : ""} : ${amScan.found} lien${amScan.found > 1 ? "s" : ""} trouvé${amScan.found > 1 ? "s" : ""}, ${amScan.ambiguous} à choisir depuis la chanson, ${amScan.missed} introuvable${amScan.missed > 1 ? "s" : ""}.`}
+                </p>
+              </div>
+            )}
+            <div className="field">
+              <label>Vitesse de défilement</label>
+              <p className="hint">
+                Cherche la durée de chaque chanson sur LRCLIB (catalogue public de paroles
+                synchronisées, sans compte) : le défilement ▶ parcourt alors toute la grille
+                pendant la vraie durée de la chanson, sans réglage. La pilule Vitesse permet
+                toujours de reprendre la main. Le premier ▶ d'une chanson fait aussi la
+                recherche tout seul ; la durée suit le carnet dans l'URL de partage et la
+                sauvegarde en fichier.
+              </p>
+            </div>
+            <div className="actions">
+              {lrcScan && lrcScan.running ? (
+                <>
+                  <span className="tag">{lrcScan.done} / {lrcScan.total}</span>
+                  <button className="btn danger" onClick={() => { lrcStopRef.current = true; }}>Stop</button>
+                </>
+              ) : (
+                <button className="btn" disabled={!online || !lrcMissing}
+                  title={online ? "Chercher la durée de chaque chanson qui n'en a pas encore" : "Hors ligne"}
+                  onClick={lrcScanAll}>
+                  Rechercher les durées manquantes{lrcMissing ? ` (${lrcMissing})` : ""}
+                </button>
+              )}
+            </div>
+            {lrcScan && !lrcScan.running && (
+              <div className="field">
+                <p className="hint">
+                  {lrcScan.error
+                    ? `Interrompu (${lrcScan.error}) après ${lrcScan.done} chanson${lrcScan.done > 1 ? "s" : ""} examinée${lrcScan.done > 1 ? "s" : ""}.`
+                    : `${lrcScan.done} chanson${lrcScan.done > 1 ? "s" : ""} examinée${lrcScan.done > 1 ? "s" : ""} : ${lrcScan.found} durée${lrcScan.found > 1 ? "s" : ""} trouvée${lrcScan.found > 1 ? "s" : ""}, ${lrcScan.missed} introuvable${lrcScan.missed > 1 ? "s" : ""}.`}
                 </p>
               </div>
             )}
