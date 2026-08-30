@@ -2466,6 +2466,9 @@ export default function Carnet() {
   const [lrcScan, setLrcScan] = useState(null); // null | { done, total, found, missed, running, error? }
   const lrcStopRef = useRef(false); // demande d'arrêt du scan LRCLIB global
   const [speedAuto, setSpeedAuto] = useState(true); // ▶ à la vitesse déduite de la durée quand elle est connue — non persisté
+  const scrollTimeRef = useRef(null); // position temporelle dans la chanson (s) pendant le défilement synchronisé
+  const [scrollPct, setScrollPct] = useState(null); // avancement affiché dans la pilule (entier 0-100)
+  const scrollPctRef = useRef(null); // dernière valeur poussée — un setState par point de %, pas par frame
   const sheetRef = useRef(null);
   const fileRef = useRef(null);
   const searchRef = useRef(null);
@@ -2602,21 +2605,36 @@ export default function Carnet() {
   // 3. Manuel — le cran 1-12 de la pilule, en pixels par seconde.
   // Le doigt met la boucle en pause ; à la reprise, les positions sont
   // remesurées (un pincement a pu changer la taille en route).
+  // Le temps courant vit dans une ref : quand l'effet redémarre pour un
+  // changement de mise en page (♯ accords, taille), le temps est la vérité
+  // et la position se re-dérive — la re-dériver du scrollTop périmé
+  // décalerait tout. Le glissé fait l'inverse, délibérément : là c'est la
+  // position posée par le doigt qui est la vérité (recalage).
   useEffect(() => {
     if (!scrolling) return;
     let raf, last = null, carry = 0, wasDragging = false, measured = false;
     let pts = null; // courbe [{ t, y }] croissante des deux côtés, ou null
-    let T = null; // position temporelle courante dans la chanson (s)
+    let chAtMeasure = 0; // hauteur visible au moment de la mesure — si elle change (menu plié/déplié, clavier), on remesure
     const measure = () => {
       pts = null;
       const el = sheetRef.current;
       if (!el || !autoScroll || !lrcLines) return;
+      chAtMeasure = el.clientHeight;
       const base = el.getBoundingClientRect().top - el.scrollTop;
       const rows = [];
-      for (const r of el.querySelectorAll(".row")) {
-        const text = fold(Array.from(r.querySelectorAll(".ly")).map((s) => s.textContent).join(" "));
+      // Accords affichés, les paroles vivent dans les spans .ly des .row —
+      // ancrer la PAROLE, pas la row (son haut est la ligne d'accords).
+      // Accords masqués, la même ligne est rendue en .plain (aucun .row) ;
+      // les lignes de texte pur des parseurs sont aussi des .plain.
+      for (const r of el.querySelectorAll(".row, .plain")) {
+        const lys = Array.from(r.querySelectorAll(".ly"));
+        // Concaténer SANS espace : les .ly sont des tranches de colonnes qui
+        // coupent en plein mot (« Prem » + « ier couplet… ») — une espace de
+        // jointure casserait les mots et ferait rater l'appariement.
+        const src = lys.length ? lys.map((s) => s.textContent).join("") : r.textContent;
+        const text = fold(src);
         if (text.split(" ").filter(Boolean).length >= 2) {
-          rows.push({ y: r.getBoundingClientRect().top - base, text });
+          rows.push({ y: (lys[0] || r).getBoundingClientRect().top - base, text });
         }
       }
       const anchors = lrcAnchors(lrcLines, rows);
@@ -2652,6 +2670,13 @@ export default function Carnet() {
       }
       return pts[pts.length - 1].t;
     };
+    // Avancement affiché dans la pilule : en régime synchronisé, la part de
+    // la chanson écoulée ; sinon la part de grille parcourue. Mis à jour au
+    // point entier seulement — pas un setState par frame.
+    const showPct = (v) => {
+      const pct = Math.max(0, Math.min(100, Math.round(v * 100)));
+      if (scrollPctRef.current !== pct) { scrollPctRef.current = pct; setScrollPct(pct); }
+    };
     const tick = (t) => {
       const el = sheetRef.current;
       if (el) {
@@ -2663,15 +2688,22 @@ export default function Carnet() {
           if (wasDragging) {
             wasDragging = false;
             measure(); // le pincement a pu changer les hauteurs
-            if (pts) T = tAt(el.scrollTop); // le doigt a déplacé la feuille = recalage dans la chanson
+            if (pts) scrollTimeRef.current = tAt(el.scrollTop); // le doigt a déplacé la feuille = recalage dans la chanson
           }
           if (last !== null) {
             const dt = (t - last) / 1000;
+            // Hauteur visible changée (repli animé du menu, clavier…) : les
+            // positions mesurées ne valent plus rien — on remesure, le temps
+            // gardé en ref re-dérive la position.
+            if (pts && el.clientHeight !== chAtMeasure) measure();
             if (pts) {
+              let T = scrollTimeRef.current;
               if (T === null) T = tAt(el.scrollTop);
               T += dt;
+              scrollTimeRef.current = T;
               const target = Math.round(yAt(T));
               if (target > el.scrollTop) el.scrollTop = target;
+              showPct(T / pts[pts.length - 1].t);
               if (T >= pts[pts.length - 1].t && el.scrollTop + el.clientHeight >= el.scrollHeight - 1) setScrolling(false);
             } else {
               const pps = autoScroll && lrcDur
@@ -2684,11 +2716,19 @@ export default function Carnet() {
                 el.scrollTop += whole;
                 if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) setScrolling(false);
               }
+              const maxTop = el.scrollHeight - el.clientHeight;
+              if (maxTop > 0) showPct(el.scrollTop / maxTop);
             }
           } else if (!measured) {
             measured = true;
             measure();
-            if (pts) T = tAt(el.scrollTop);
+            if (pts) {
+              // Redémarrage pour un changement de mise en page : le temps
+              // gardé en ref est la vérité, la position se re-dérive.
+              // Premier démarrage (ref vide) : l'inverse.
+              if (scrollTimeRef.current !== null) el.scrollTop = Math.round(yAt(scrollTimeRef.current));
+              else scrollTimeRef.current = tAt(el.scrollTop);
+            }
           }
           last = t;
         }
@@ -2697,7 +2737,14 @@ export default function Carnet() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [scrolling, speed, autoScroll, lrcDur, lrcLines]);
+  }, [scrolling, speed, autoScroll, lrcDur, lrcLines, showChords, size]);
+
+  // Hors défilement — ou hors mode Auto — le temps courant et le
+  // pourcentage n'ont plus de sens : le prochain départ (▶, retour à Auto)
+  // se re-dérive de la position de la feuille.
+  useEffect(() => {
+    if (!scrolling || !autoScroll) { scrollTimeRef.current = null; scrollPctRef.current = null; setScrollPct(null); }
+  }, [scrolling, autoScroll]);
 
   // Taille courante lisible depuis un écouteur natif, sans le réabonner à
   // chaque cran : seule la valeur au *début* du geste sert de référence.
@@ -3976,9 +4023,25 @@ export default function Carnet() {
             ref={sheetRef}
             onPointerDown={() => { draggingRef.current = true; clearTimeout(resumeRef.current); }}
             onPointerUp={() => { clearTimeout(resumeRef.current); resumeRef.current = setTimeout(() => { draggingRef.current = false; }, 700); }}
-            onPointerCancel={() => { draggingRef.current = false; }}
+            // Safari envoie pointercancel dès qu'il prend la main sur le
+            // scroll — doigt encore posé. Reprise immédiate = la boucle se
+            // bat avec le doigt (vérifié : le glissé « saute »). On diffère
+            // comme pour pointerup ; onScroll ci-dessous repousse la reprise
+            // tant que la feuille bouge (doigt ou inertie).
+            onPointerCancel={() => { clearTimeout(resumeRef.current); resumeRef.current = setTimeout(() => { draggingRef.current = false; }, 700); }}
             onTouchStart={() => { draggingRef.current = true; clearTimeout(resumeRef.current); }}
             onTouchEnd={() => { clearTimeout(resumeRef.current); resumeRef.current = setTimeout(() => { draggingRef.current = false; }, 700); }}
+            onScroll={() => {
+              // Pendant un geste (draggingRef posé), tout mouvement — doigt
+              // ou inertie — repousse la reprise : elle n'a lieu que 700 ms
+              // après l'arrêt réel de la feuille. Les écritures de la boucle
+              // n'arrivent que draggingRef baissé : pas de réarmement par
+              // nos propres scrolls.
+              if (draggingRef.current) {
+                clearTimeout(resumeRef.current);
+                resumeRef.current = setTimeout(() => { draggingRef.current = false; }, 700);
+              }
+            }}
           >
             {scrolling && !reviseMode && autoScroll && lrcLines && (
               <div className="readguide band" style={{ fontSize: size }} aria-hidden="true" />
@@ -4001,7 +4064,7 @@ export default function Carnet() {
             <div className="speedfly">
               <div className="stepper">
                 <button onClick={() => (autoScroll ? leaveAuto(-1) : setSpeed(Math.max(1, speed - 1)))} title="Plus lent">«</button>
-                <span>Vitesse <b>{autoScroll ? "Auto" : speed}</b></span>
+                <span>Vitesse <b>{autoScroll ? "Auto" : speed}</b>{scrollPct !== null && <> · {scrollPct} %</>}</span>
                 <button onClick={() => (autoScroll ? leaveAuto(+1) : setSpeed(Math.min(12, speed + 1)))} title="Plus rapide">»</button>
                 {lrcDur > 0 && !autoScroll && (
                   <button className="autobtn" onClick={() => setSpeedAuto(true)}
