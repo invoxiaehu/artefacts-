@@ -684,8 +684,9 @@ function normalizeLibrary(data) {
       // vraisemblable (amNorm) — il arrive par la sauvegarde en fichier,
       // l'URL de partage ne le transporte pas.
       ...(amNorm(s.am) ? { am: amNorm(s.am) } : {}),
-      // Durée LRCLIB : quelques octets, elle voyage partout (URL de
-      // partage comprise) — la vitesse de défilement suit le carnet.
+      // Synchronisation LRCLIB : la durée (quelques octets) voyage partout,
+      // URL de partage comprise ; les paroles horodatées (lrc.lines)
+      // arrivent par la sauvegarde en fichier, encodeShare les retire.
       ...(lrcNorm(s.lrc) ? { lrc: lrcNorm(s.lrc) } : {}),
     }));
   if (!songs.length) throw new Error("aucune grille exploitable");
@@ -704,8 +705,11 @@ async function encodeShare(library) {
   const json = JSON.stringify({
     // Les liens Apple Music (am) restent hors de l'URL, comme les tags et
     // les listes : ils voyagent par la sauvegarde en fichier, et l'URL de
-    // partage reste courte.
-    songs: library.songs.map(({ id, am, ...rest }) => rest),
+    // partage reste courte. Même sort pour les paroles synchronisées
+    // (lrc.lines, plusieurs Ko par chanson) — la durée seule voyage.
+    songs: library.songs.map(({ id, am, lrc, ...rest }) => (lrc
+      ? { ...rest, lrc: lrc.none ? { none: true } : { dur: lrc.dur } }
+      : rest)),
     showChords: library.showChords,
     size: library.size,
     speed: library.speed,
@@ -1266,23 +1270,30 @@ function lrcScore(r, title, artist) {
   return s;
 }
 
-/** Durée retenue : la médiane des candidats crédibles. Les entrées LRCLIB
- *  de la même chanson diffèrent de quelques secondes (fondus, éditions) et
- *  une entrée fantaisiste peut être très loin — la médiane tombe dans la
- *  grappe des versions normales sans qu'on ait à choisir. */
-function lrcPickDuration(results, title, artist) {
-  const durs = (results || [])
-    .filter((r) => r && Number(r.duration) >= 30 && Number(r.duration) <= 3600)
-    .filter((r) => lrcScore(r, title, artist) >= AM_MAYBE)
-    .map((r) => Number(r.duration))
-    .sort((a, b) => a - b);
-  return durs.length ? Math.round(durs[Math.floor(durs.length / 2)]) : 0;
+/** Paroles synchronisées « [mm:ss.xx] texte » → [[t, texte], …]. Lignes
+ *  vides ignorées (respirations) ; null si trop peu pour ancrer quoi que
+ *  ce soit ou format inattendu. */
+function lrcParseSynced(s) {
+  const out = [];
+  for (const ln of String(s || "").split("\n")) {
+    const m = /^\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$/.exec(ln.trim());
+    if (m && m[3].trim()) {
+      out.push([Math.round((parseInt(m[1], 10) * 60 + parseFloat(m[2])) * 10) / 10, m[3].trim().slice(0, 80)]);
+    }
+    if (out.length >= 400) break;
+  }
+  return out.length >= 4 ? out : null;
 }
 
 /** Recherche : l'appariement exact de LRCLIB d'abord (get), puis la
- *  recherche plein-texte — les deux alimentent la même médiane. Échec des
- *  deux voies → erreur explicite, l'appelant n'enregistre rien (jamais de
- *  « non trouvé » sur panne, comme pour Apple Music). */
+ *  recherche plein-texte. Durée retenue : la médiane des candidats
+ *  crédibles — les entrées LRCLIB d'une même chanson diffèrent de quelques
+ *  secondes (fondus, éditions) et une entrée fantaisiste peut être très
+ *  loin, la médiane tombe dans la grappe des versions normales. Les
+ *  paroles synchronisées viennent du candidat crédible le plus proche de
+ *  cette médiane. Échec des deux voies → erreur explicite, l'appelant
+ *  n'enregistre rien (jamais de « non trouvé » sur panne, comme pour
+ *  Apple Music). */
 async function lrcFind(title, artist) {
   if (navigator.onLine === false) throw new Error("hors ligne");
   const t = stripDecorRaw(title).replace(/\s+/g, " ").trim() || String(title || "").trim();
@@ -1297,17 +1308,91 @@ async function lrcFind(title, artist) {
     reached = true;
     if (Array.isArray(found)) candidates = candidates.concat(found);
   } catch { if (!reached) throw new Error("service injoignable"); }
-  const dur = lrcPickDuration(candidates, title, artist);
-  return dur ? { dur } : { none: true };
+  const credible = candidates.filter((r) => r && Number(r.duration) >= 30
+    && Number(r.duration) <= 3600 && lrcScore(r, title, artist) >= AM_MAYBE);
+  if (!credible.length) return { none: true };
+  const durs = credible.map((r) => Number(r.duration)).sort((a, b) => a - b);
+  const dur = Math.round(durs[Math.floor(durs.length / 2)]);
+  let lines = null, bestGap = Infinity;
+  for (const r of credible) {
+    if (!r.syncedLyrics) continue;
+    const gap = Math.abs(Number(r.duration) - dur);
+    if (gap < bestGap) {
+      const p = lrcParseSynced(r.syncedLyrics);
+      if (p) { lines = p; bestGap = gap; }
+    }
+  }
+  return lines ? { dur, lines } : { dur };
 }
 
-/** Champ lrc venu d'un import : durée plausible en secondes entières, ou
- *  le marqueur « non trouvé » — tout le reste est abandonné (null). */
+/** Champ lrc venu d'un import : durée plausible en secondes entières,
+ *  lignes synchronisées vraisemblables, ou le marqueur « non trouvé » —
+ *  tout le reste est abandonné. */
 function lrcNorm(raw) {
   if (!raw || typeof raw !== "object") return null;
   if (raw.none === true) return { none: true };
   const dur = Math.round(Number(raw.dur));
-  return dur >= 30 && dur <= 3600 ? { dur } : null;
+  if (!(dur >= 30 && dur <= 3600)) return null;
+  const out = { dur };
+  if (Array.isArray(raw.lines)) {
+    const lines = raw.lines
+      .filter((l) => Array.isArray(l) && Number.isFinite(Number(l[0])) && Number(l[0]) >= 0
+        && typeof l[1] === "string" && l[1].trim())
+      .slice(0, 400)
+      .map((l) => [Math.round(Number(l[0]) * 10) / 10, String(l[1]).slice(0, 80)]);
+    if (lines.length >= 4) out.lines = lines;
+  }
+  return out;
+}
+
+/** Similarité d'une ligne chantée contre une ligne de la grille (textes
+ *  déjà repliés par fold) : égalité, inclusion (la grille regroupe souvent
+ *  deux vers sur une ligne), sinon Jaccard des mots. */
+function lineSim(sung, row) {
+  if (!sung || !row) return 0;
+  if (sung === row) return 1;
+  const S = sung.split(" "), R = new Set(row.split(" "));
+  if (S.length >= 3 && S.every((w) => R.has(w))) return 0.9;
+  return wordOverlap(sung, row);
+}
+
+/** Ancres de synchronisation : alignement global monotone (programmation
+ *  dynamique) entre les lignes chantées [[t, texte]] et les lignes de la
+ *  grille [{ y, text }] (text déjà replié). On maximise la somme des
+ *  similarités en avançant dans la grille, jamais en arrière — un match
+ *  isolé loin devant (un « I don't belong here » d'outro) perd contre les
+ *  couplets qu'il enjamberait, là où un glouton sauterait (vérifié sur
+ *  Creep). Un refrain chanté mais non réécrit reste sans ancre : le
+ *  défilement s'attarde à l'étiquette pendant qu'il est chanté. Deux vers
+ *  chantés peuvent partager la même ligne de grille. */
+function lrcAnchors(lines, rows) {
+  const THR = 0.7;
+  const sungs = lines
+    .map(([t, text]) => ({ t, f: fold(text) }))
+    .filter((s) => s.f.split(" ").length >= 2); // « Run! » : trop court pour ancrer
+  const n = sungs.length, m = rows.length;
+  if (!n || !m) return [];
+  // S[i][j] : meilleur score avec les i premières lignes chantées et une
+  // dernière ligne de grille utilisée ≤ j (réutilisable par la suivante).
+  const S = Array.from({ length: n + 1 }, () => new Float64Array(m + 1));
+  const sims = Array.from({ length: n }, (_, i) => rows.map((r) => lineSim(sungs[i].f, r.text)));
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      const sim = sims[i - 1][j - 1];
+      S[i][j] = Math.max(S[i][j - 1], S[i - 1][j] + (sim >= THR ? sim : 0));
+    }
+  }
+  const anchors = [];
+  let i = n, j = m;
+  while (i > 0 && j > 0) {
+    const sim = sims[i - 1][j - 1];
+    if (S[i][j] === S[i][j - 1]) j--;
+    else if (sim >= THR && S[i][j] === S[i - 1][j] + sim) {
+      anchors.push({ t: sungs[i - 1].t, y: rows[j - 1].y });
+      i--;
+    } else i--;
+  }
+  return anchors.reverse();
 }
 
 /** Durée en minutes:secondes (« 3:52 »). */
@@ -2476,12 +2561,15 @@ export default function Carnet() {
     window.history.replaceState(null, "", hash);
   };
 
-  // Durée LRCLIB de la chanson affichée — calculée ici (et pas depuis
-  // `current`, déclaré plus bas) parce que l'effet de défilement s'en sert.
-  const lrcDur = (() => {
+  // Durée et lignes synchronisées LRCLIB de la chanson affichée — calculées
+  // ici (et pas depuis `current`, déclaré plus bas) parce que l'effet de
+  // défilement s'en sert.
+  const curLrc = (() => {
     const s = songs.find((x) => x.id === currentId);
-    return (s && s.lrc && s.lrc.dur) || 0;
+    return (s && s.lrc) || null;
   })();
+  const lrcDur = (curLrc && curLrc.dur) || 0;
+  const lrcLines = (curLrc && curLrc.lines) || null;
   const autoScroll = speedAuto && lrcDur > 0;
   // Quitter le mode Auto par « ou » de la pilule : on repart du cran manuel
   // le plus proche de la vitesse automatique en cours, ajusté d'un pas.
@@ -2492,33 +2580,105 @@ export default function Carnet() {
     setSpeedAuto(false);
   };
 
-  // Défilement : vitesse en pixels par seconde, indépendante du rafraîchissement.
-  // Le doigt met la boucle en pause puis elle repart d'où l'on s'est arrêté.
-  // Quand la durée de la chanson est connue (LRCLIB) et le mode Auto actif,
-  // la vitesse est déduite : toute la grille défile pendant la durée réelle.
-  // Recalculée à chaque frame — le pincement qui change la taille de police
-  // en cours de route change la hauteur, la vitesse suit.
+  // Défilement. Trois régimes, du plus renseigné au plus simple :
+  // 1. Synchronisé — la chanson a des paroles horodatées (LRCLIB) : elles
+  //    sont ancrées aux lignes de la grille (lrcAnchors) et la position
+  //    suit la courbe temps → pixels par interpolation. Un refrain non
+  //    réécrit ou un solo non noté s'attardent d'eux-mêmes : rien à ancrer
+  //    là, la courbe y est presque plate. Déplacer la feuille au doigt
+  //    pendant ce régime = se recaler dans la chanson (courbe inversée).
+  // 2. Durée seule — vitesse constante : toute la grille pendant la durée
+  //    réelle de la chanson.
+  // 3. Manuel — le cran 1-12 de la pilule, en pixels par seconde.
+  // Le doigt met la boucle en pause ; à la reprise, les positions sont
+  // remesurées (un pincement a pu changer la taille en route).
   useEffect(() => {
     if (!scrolling) return;
-    let raf, last = null, carry = 0;
+    let raf, last = null, carry = 0, wasDragging = false, measured = false;
+    let pts = null; // courbe [{ t, y }] croissante des deux côtés, ou null
+    let T = null; // position temporelle courante dans la chanson (s)
+    const measure = () => {
+      pts = null;
+      const el = sheetRef.current;
+      if (!el || !autoScroll || !lrcLines) return;
+      const base = el.getBoundingClientRect().top - el.scrollTop;
+      const rows = [];
+      for (const r of el.querySelectorAll(".row")) {
+        const text = fold(Array.from(r.querySelectorAll(".ly")).map((s) => s.textContent).join(" "));
+        if (text.split(" ").filter(Boolean).length >= 2) {
+          rows.push({ y: r.getBoundingClientRect().top - base, text });
+        }
+      }
+      const anchors = lrcAnchors(lrcLines, rows);
+      if (anchors.length < 4) return; // trop peu pour une courbe honnête → régime durée seule
+      const maxTop = el.scrollHeight - el.clientHeight;
+      const read = el.clientHeight * 0.35; // la ligne chantée se tient au tiers haut
+      const p = [{ t: 0, y: 0 }];
+      let floor = 0;
+      for (const a of anchors) {
+        const y = Math.max(floor, Math.min(maxTop, a.y - read));
+        if (a.t > p[p.length - 1].t) { p.push({ t: a.t, y }); floor = y; }
+      }
+      if (lrcDur > p[p.length - 1].t) p.push({ t: lrcDur, y: maxTop });
+      pts = p;
+    };
+    const yAt = (t) => {
+      if (t <= pts[0].t) return pts[0].y;
+      for (let i = 1; i < pts.length; i++) {
+        if (pts[i].t >= t) {
+          const a = pts[i - 1], b = pts[i];
+          return b.t === a.t ? b.y : a.y + (b.y - a.y) * (t - a.t) / (b.t - a.t);
+        }
+      }
+      return pts[pts.length - 1].y;
+    };
+    const tAt = (y) => {
+      if (y <= pts[0].y) return pts[0].t;
+      for (let i = 1; i < pts.length; i++) {
+        if (pts[i].y >= y) {
+          const a = pts[i - 1], b = pts[i];
+          return b.y === a.y ? a.t : a.t + (b.t - a.t) * (y - a.y) / (b.y - a.y);
+        }
+      }
+      return pts[pts.length - 1].t;
+    };
     const tick = (t) => {
       const el = sheetRef.current;
       if (el) {
         if (draggingRef.current) {
           last = null;
           carry = 0;
+          wasDragging = true;
         } else {
+          if (wasDragging) {
+            wasDragging = false;
+            measure(); // le pincement a pu changer les hauteurs
+            if (pts) T = tAt(el.scrollTop); // le doigt a déplacé la feuille = recalage dans la chanson
+          }
           if (last !== null) {
-            const pps = autoScroll
-              ? Math.min(200, Math.max(2, (el.scrollHeight - el.clientHeight) / lrcDur))
-              : speed * 9;
-            carry += ((t - last) / 1000) * pps;
-            const whole = Math.floor(carry);
-            if (whole >= 1) {
-              carry -= whole;
-              el.scrollTop += whole;
-              if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) setScrolling(false);
+            const dt = (t - last) / 1000;
+            if (pts) {
+              if (T === null) T = tAt(el.scrollTop);
+              T += dt;
+              const target = Math.round(yAt(T));
+              if (target > el.scrollTop) el.scrollTop = target;
+              if (T >= pts[pts.length - 1].t && el.scrollTop + el.clientHeight >= el.scrollHeight - 1) setScrolling(false);
+            } else {
+              const pps = autoScroll && lrcDur
+                ? Math.min(200, Math.max(2, (el.scrollHeight - el.clientHeight) / lrcDur))
+                : speed * 9;
+              carry += dt * pps;
+              const whole = Math.floor(carry);
+              if (whole >= 1) {
+                carry -= whole;
+                el.scrollTop += whole;
+                if (el.scrollTop + el.clientHeight >= el.scrollHeight - 1) setScrolling(false);
+              }
             }
+          } else if (!measured) {
+            measured = true;
+            measure();
+            if (pts) T = tAt(el.scrollTop);
           }
           last = t;
         }
@@ -2527,7 +2687,7 @@ export default function Carnet() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [scrolling, speed, autoScroll, lrcDur]);
+  }, [scrolling, speed, autoScroll, lrcDur, lrcLines]);
 
   // Taille courante lisible depuis un écouteur natif, sans le réabonner à
   // chaque cran : seule la valeur au *début* du geste sert de référence.
@@ -3765,7 +3925,11 @@ export default function Carnet() {
                   {lrcErr && lrcErr.id === current.id && <span className="amnone">{lrcErr.msg}</span>}
                   {current.lrc && current.lrc.dur ? (
                     <>
-                      <span className="durval" title="Durée trouvée sur LRCLIB — le défilement ▶ se cale dessus">⏱ {fmtDur(current.lrc.dur)}</span>
+                      <span className="durval" title={current.lrc.lines
+                        ? "Paroles synchronisées LRCLIB — le défilement ▶ suit la chanson ligne à ligne"
+                        : "Durée LRCLIB — le défilement ▶ parcourt la grille pendant cette durée"}>
+                        ⏱ {fmtDur(current.lrc.dur)}{current.lrc.lines ? " · sync" : ""}
+                      </span>
                       <button className="btn slim ghost" disabled={!online || lrcBusyId === current.id}
                         title={online ? "Chercher à nouveau la durée sur LRCLIB" : "Hors ligne"}
                         onClick={() => lrcSearchOne(current)}>
@@ -4165,12 +4329,13 @@ export default function Carnet() {
             <div className="field">
               <label>Vitesse de défilement</label>
               <p className="hint">
-                Cherche la durée de chaque chanson sur LRCLIB (catalogue public de paroles
-                synchronisées, sans compte) : le défilement ▶ parcourt alors toute la grille
-                pendant la vraie durée de la chanson, sans réglage. La pilule Vitesse permet
-                toujours de reprendre la main. Le premier ▶ d'une chanson fait aussi la
-                recherche tout seul ; la durée suit le carnet dans l'URL de partage et la
-                sauvegarde en fichier.
+                Cherche chaque chanson sur LRCLIB (catalogue public de paroles synchronisées,
+                sans compte) : le défilement ▶ suit alors la chanson ligne à ligne — il
+                s'attarde de lui-même sur un refrain non réécrit ou un solo, et déplacer la
+                feuille au doigt pendant le défilement recale la position dans le morceau.
+                Sans paroles exploitables, il parcourt la grille pendant la durée réelle ;
+                la pilule Vitesse permet toujours de reprendre la main. Le premier ▶ d'une
+                chanson fait la recherche tout seul.
               </p>
             </div>
             <div className="actions">

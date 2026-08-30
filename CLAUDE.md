@@ -87,10 +87,14 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   `memoAuto: true` = score écrit par le scoring automatique, effacé par un
   réglage manuel aux étoiles — qui passe par un `confirm` d'avertissement).
   Champs mémoïsés par recherche externe : `am` (piste Apple Music, ou
-  `{ none:true }`) et `lrc` (`{ dur }` en secondes venu de LRCLIB, ou
-  `{ none:true }`) — `lrc` voyage dans l'URL de partage, `am` non. Le
-  défilement ▶ se cale sur `lrc.dur` (toute la grille défile pendant la
-  durée réelle) ; premier ▶ sans `lrc` = recherche automatique ; pilule
+  `{ none:true }`) et `lrc` (LRCLIB : `{ dur, lines? }`, ou `{ none:true }` ;
+  `lines` = paroles horodatées `[[t, texte], …]`) — dans l'URL de partage,
+  `lrc` est réduit à sa durée (`encodeShare`), `am` n'y va pas du tout. Le
+  défilement ▶ : avec `lines`, ancrage ligne à ligne sur la grille
+  (`lrcAnchors`, alignement DP monotone — un refrain non réécrit reste sans
+  ancre et le défilement s'y attarde ; glissé pendant le défilement =
+  recalage dans la chanson) ; avec `dur` seule, toute la grille pendant la
+  durée réelle ; premier ▶ sans `lrc` = recherche automatique ; pilule
   Vitesse en « Auto », débrayable (« / » → cran manuel équivalent ±1,
   bouton Auto pour revenir).
 - Les **ids de chansons sont régénérés à chaque import** : tags (`tags:v1`)
