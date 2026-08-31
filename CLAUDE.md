@@ -108,6 +108,23 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   signature pilote le point ambre « dirty » ; en changer le format change
   la signature.
 
+### Écriture des accords
+
+- `asciiAccidentals` (appelé par `tidy`, donc par les deux parseurs, et par
+  `isChordToken` / `parseChordSymbol` / `prefersFlats`) ramène les glyphes
+  `♭`/`♯` à `b`/`#` : rien en aval ne connaît l'Unicode, et ChordSheetJS
+  transpose « A♭ » en « Ab♭ ». Un caractère pour un caractère — l'alignement
+  en colonnes, d'où vient la position des accords sur la parole, est intact.
+  La substitution est limitée à ce qui suit une note ou un chiffre.
+- `unwrapChord` accepte l'accord entre parenthèses (« (G) », passage
+  facultatif) : déparenthésé pour l'analyse seulement, le jeton affiché et
+  la transposition gardent les parenthèses. Volontairement borné aux accords
+  notés, pour que « (x3) » et « (Repeat to Fade) » restent de la notation.
+- Le modèle reste en ASCII (`b`/`#`, ce que produisent aussi `FLATS`/`SHARPS`) ;
+  `prettyChord` pose les vrais glyphes **au rendu seulement** — feuille,
+  diagrammes, noms de notes. Tout nouvel endroit qui affiche un accord doit
+  y passer.
+
 ### Design system
 
 - Palette en variables sur `.cb` (`--bg`, `--panel`, `--amber`, `--hot`…)

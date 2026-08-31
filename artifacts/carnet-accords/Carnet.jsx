@@ -171,12 +171,36 @@ function namesFromFile(filename) {
 /* Classement des lignes, puis conversion en ChordPro                  */
 /* ------------------------------------------------------------------ */
 
+/** Bémols et dièses typographiques ramenés à « b » et « # ». Les grilles
+ *  en contiennent dès qu'elles viennent d'un PDF ou d'un copier-coller
+ *  soigné (« A♭ », « F♯ », « C7♭9 »), et rien en aval ne les connaît :
+ *  ni isChordToken, ni SEMIS, ni ChordSheetJS (qui transpose « A♭ » en
+ *  « Ab♭ »). Un caractère pour un caractère : l'alignement en colonnes,
+ *  d'où l'app tire la position des accords sur la parole, est intact.
+ *  Restreint à ce qui suit une note ou un chiffre — un ♭ isolé dans une
+ *  parole n'est pas une altération. */
+const ASCII_ACC = { "♭": "b", "♯": "#" };
+const asciiAccidentals = (raw) =>
+  String(raw || "").replace(/([A-G0-9])([♭♯])/g, (_, c, a) => c + ASCII_ACC[a]);
+
+/** « (G) », « (E♭) » : accord facultatif ou de passage, notation courante.
+ *  On ne déparenthèse que pour l'analyser — le jeton affiché garde ses
+ *  parenthèses, et « (x3) » ou « (Repeat) » n'y gagnent rien : ce ne sont
+ *  pas des accords, ils restent de la notation. */
+const unwrapChord = (t) => (/^\([^()]+\)$/.test(t) ? t.slice(1, -1) : t);
+
+/** Affichage seul : le modèle reste en ASCII (b/#, ce que produisent aussi
+ *  les tables de transposition), le rendu porte les vrais glyphes — « A♭ »
+ *  se lit mieux que « Ab », où le b se confond avec une note. Dans un
+ *  symbole d'accord, b et # ne sont jamais autre chose qu'une altération. */
+const prettyChord = (t) => String(t || "").replace(/b/g, "♭").replace(/#/g, "♯");
+
 function isChordToken(raw) {
   if (!raw) return false;
-  const t = raw.replace(/[,|.]+$/, "");
+  const t = asciiAccidentals(raw).replace(/[,|.]+$/, "");
   if (!t) return false;
   if (/^(N\.?C\.?|x\d+|\|+|%)$/i.test(t)) return true;
-  const m = /^([A-G][#b]?)(.*)$/.exec(t);
+  const m = /^([A-G][#b]?)(.*)$/.exec(unwrapChord(t));
   if (!m) return false;
   const parts = m[2].split("/");
   if (parts.length > 2) return false;
@@ -190,7 +214,7 @@ const isChordLine = (line) => {
 const isSectionLine = (line) => /^\s*\[[^\]]+\]\s*$/.test(line);
 
 function tidy(raw) {
-  return (raw || "")
+  return asciiAccidentals(raw)
     .replace(/\r\n?/g, "\n")
     .replace(/([^\s\[])\[/g, "$1\n[")
     .replace(/\](\S)/g, "]\n$1")
@@ -299,9 +323,11 @@ function chordProToBody(raw) {
 const TO_FLAT = { "C#": "Db", "D#": "Eb", "F#": "Gb", "G#": "Ab", "A#": "Bb", Cb: "B", Fb: "E", "B#": "C", "E#": "F" };
 const TO_SHARP = { Db: "C#", Eb: "D#", Gb: "F#", Ab: "G#", Bb: "A#", Cb: "B", Fb: "E", "B#": "C", "E#": "F" };
 const respell = (ch, flats) =>
-  (ch || "").replace(/(^|\/)([A-G][#b])/g, (_, p, n) => p + ((flats ? TO_FLAT : TO_SHARP)[n] || n));
-const prefersFlats = (raw) =>
-  (raw.match(/[A-G]b/g) || []).length >= (raw.match(/[A-G]#/g) || []).length;
+  (ch || "").replace(/(^|\/|\()([A-G][#b])/g, (_, p, n) => p + ((flats ? TO_FLAT : TO_SHARP)[n] || n));
+const prefersFlats = (raw) => {
+  const t = asciiAccidentals(raw);
+  return (t.match(/[A-G]b/g) || []).length >= (t.match(/[A-G]#/g) || []).length;
+};
 
 /* ------------------------------------------------------------------ */
 /* Deux chemins vers le même modèle d'affichage                         */
@@ -440,8 +466,9 @@ function normalizeSuffix(s) {
  *  null pour tout ce qui n'est pas un accord jouable : jetons de structure
  *  (N.C., x2, |, %) — qu'isChordToken accepte mais qui ne se visualisent pas. */
 function parseChordSymbol(raw) {
-  const t = (raw || "").replace(/[,|.]+$/, "");
-  if (!t || /^(N\.?C\.?|x\d+|\|+|%)$/i.test(t)) return null;
+  const raw2 = asciiAccidentals(raw).replace(/[,|.]+$/, "");
+  if (!raw2 || /^(N\.?C\.?|x\d+|\|+|%)$/i.test(raw2)) return null;
+  const t = unwrapChord(raw2);
   const m = /^([A-G][#b]?)([^/]*)(?:\/([A-G][#b]?))?$/.exec(t);
   if (!m || SEMIS[m[1]] === undefined) return null;
   const { suffix, exact } = normalizeSuffix(m[2]);
@@ -1864,7 +1891,7 @@ function PianoDiagram({ parsed }) {
       stroke={isBass ? "var(--hot)" : "var(--amber)"} strokeWidth={2} />;
   };
   return (
-    <svg viewBox={`-1 -1 ${14 * W + 2} ${H + 2}`} role="img" aria-label={"Accord " + parsed.label + " au piano"}>
+    <svg viewBox={`-1 -1 ${14 * W + 2} ${H + 2}`} role="img" aria-label={"Accord " + prettyChord(parsed.label) + " au piano"}>
       {whites.map((k) => (
         <rect key={k.semi} x={k.x} y={0} width={W} height={H} rx={2}
           fill="#F2EFE8" stroke="#3A3E48" strokeWidth={1} />
@@ -1957,8 +1984,8 @@ function FlowSlide({ ev, instrument, posIndex }) {
   const [s0, e0] = ev.line ? segmentBounds(ev.line, ev.segStart, ev.segEnd) : [0, 0];
   const s = Math.max(0, Math.min(s0 - lead, line.length));
   const e = Math.max(s, Math.min(e0 - lead, line.length));
-  const meta = [chordNoteNames(ev.parsed).join(" · ")];
-  if (instrument === "guitar" && pos && pos.bassMissing) meta.push("basse : " + ev.parsed.bass);
+  const meta = [chordNoteNames(ev.parsed).map(prettyChord).join(" · ")];
+  if (instrument === "guitar" && pos && pos.bassMissing) meta.push("basse : " + prettyChord(ev.parsed.bass));
   if (instrument === "guitar" ? (pos && pos.approx) : !ev.parsed.exact) meta.push("approx.");
   return (
     <>
@@ -1970,10 +1997,10 @@ function FlowSlide({ ev, instrument, posIndex }) {
           ) : line ? line : <span className="flowinstru">— instrumental —</span>}
         </span>
       </div>
-      <div className="flowchord">{ev.parsed.label}</div>
+      <div className="flowchord">{prettyChord(ev.parsed.label)}</div>
       <div className="flowdiag">
         {instrument === "guitar" && pos
-          ? <GuitarDiagram pos={pos} label={ev.parsed.label} />
+          ? <GuitarDiagram pos={pos} label={prettyChord(ev.parsed.label)} />
           : <PianoDiagram parsed={ev.parsed} />}
       </div>
       <div className="flowmeta">{meta.join("  ·  ")}</div>
@@ -2040,7 +2067,7 @@ function ChordFlow({ events, index, setIndex, instrument, setInstrument, onClose
   const prev = events[index - 1], next = events[index + 1];
 
   return (
-    <div className="flow" role="dialog" aria-label={ev ? "Accord " + ev.parsed.label : "Accords"}>
+    <div className="flow" role="dialog" aria-label={ev ? "Accord " + prettyChord(ev.parsed.label) : "Accords"}>
       <div className="flowtop">
         <button className="iconbtn" title="Fermer" aria-label="Fermer la visualisation" onClick={onClose}>✕</button>
         <div className="flowprog">
@@ -2065,7 +2092,7 @@ function ChordFlow({ events, index, setIndex, instrument, setInstrument, onClose
       </div>
       <div className="flowbottom">
         <button className="flowchip" disabled={!prev} onClick={() => go(index - 1)}
-          title="Accord précédent">{prev ? "‹ " + prev.parsed.label : "‹"}</button>
+          title="Accord précédent">{prev ? "‹ " + prettyChord(prev.parsed.label) : "‹"}</button>
         <div className="spacer" />
         {instrument === "guitar" && positions.length > 1 && (
           <div className="stepper">
@@ -2076,7 +2103,7 @@ function ChordFlow({ events, index, setIndex, instrument, setInstrument, onClose
         )}
         <div className="spacer" />
         <button className="flowchip" disabled={!next} onClick={() => go(index + 1)}
-          title="Accord suivant">{next ? next.parsed.label + " ›" : "›"}</button>
+          title="Accord suivant">{next ? prettyChord(next.parsed.label) + " ›" : "›"}</button>
       </div>
       <div className="flowhint">← → pour naviguer · Échap pour fermer</div>
     </div>
@@ -2119,13 +2146,13 @@ function Sheet({ blocks, showChords, size, maskFrom, maskUnits, onChordTap }) {
                 <span className="seg" key={j}>
                   {tappable ? (
                     <span className="ch tappable" role="button" tabIndex={0}
-                      title={"Voir l'accord " + c.chord}
+                      title={"Voir l'accord " + prettyChord(c.chord)}
                       onClick={() => onChordTap(i, j)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onChordTap(i, j); }
-                      }}>{c.chord}</span>
+                      }}>{prettyChord(c.chord)}</span>
                   ) : (
-                    <span className="ch">{c.chord}</span>
+                    <span className="ch">{prettyChord(c.chord)}</span>
                   )}
                   <span className="ly">{c.lyrics}</span>
                 </span>
