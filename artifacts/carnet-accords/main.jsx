@@ -101,6 +101,19 @@ window.offline = {
       (error) => { inFlight = false; apply(null); throw error; },
     );
   },
+  /** Demande au serveur s'il existe une version plus récente. Rend true si
+   *  une mise à jour est en route (elle s'installe, puis `waiting` passe à
+   *  vrai par l'écouteur `updatefound` — le bouton d'installation apparaît
+   *  de lui-même), false si l'appareil a déjà la dernière. Demande le
+   *  réseau : sans lui, on ne peut rien affirmer, donc false. */
+  check() {
+    if (!supported) return Promise.resolve(false);
+    return navigator.serviceWorker.getRegistration().then((reg) => {
+      if (!reg) return false;
+      if (reg.waiting || reg.installing) return true;
+      return reg.update().then(() => Boolean(reg.installing || reg.waiting));
+    }).catch(() => false);
+  },
   /** Applique une mise à jour en attente : le nouveau worker prend la main,
    *  puis la page recharge (controllerchange, plus bas). */
   update() {
