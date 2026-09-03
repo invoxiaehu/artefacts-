@@ -876,11 +876,30 @@ function mergeTags(prev, added) {
   return { defs, byKey };
 }
 
-/** La charge d'une sauvegarde : grilles, tags et listes, jamais les ids
+/** La charge d'une sauvegarde : grilles, tags, listes et — quand ils
+ *  existent — les identifiants de l'app Spotify, jamais les ids de chansons
  *  (régénérés à chaque import). Une seule fonction pour que le fichier écrit
- *  et la signature comparée soient forcément d'accord. */
-const backupJson = (songs, tags, lists) =>
-  JSON.stringify({ songs: songs.map(({ id, ...rest }) => rest), tags, lists }, null, 1);
+ *  et la signature comparée soient forcément d'accord.
+ *
+ *  Les identifiants Spotify sont là par choix du propriétaire du carnet : la
+ *  sauvegarde sert d'abord à retrouver son carnet entier sur un appareil
+ *  neuf, recherche automatique comprise. Corollaire assumé, dit dans
+ *  l'interface au moment d'enregistrer : ce fichier ne se donne pas tel quel
+ *  à quelqu'un d'autre — pour ça, l'URL de partage, qui ne les porte pas. */
+const backupJson = (songs, tags, lists, spAuth) =>
+  JSON.stringify({
+    songs: songs.map(({ id, ...rest }) => rest), tags, lists,
+    ...(spAuth && spAuth.id && spAuth.secret ? { spAuth } : {}),
+  }, null, 1);
+
+/** Identifiants venus d'une sauvegarde : deux chaînes plausibles, sinon
+ *  rien. Bornées — un fichier bricolé ne remplit pas le stockage. */
+function normalizeSpAuth(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const id = String(raw.id || "").trim().slice(0, 200);
+  const secret = String(raw.secret || "").trim().slice(0, 200);
+  return id && secret ? { id, secret } : null;
+}
 
 /** Empreinte courte, juste pour répondre à « est-ce que ça a changé depuis la
  *  dernière sauvegarde ? ». Pas de cryptographie ici. */
@@ -1339,6 +1358,147 @@ async function spOEmbed(id, ms = 8000) {
     throw new Error("service injoignable");
   } finally { clearTimeout(t); }
 }
+
+/* ------------------------------------------------------------------ */
+/* Recherche Spotify authentifiée — Client ID + Secret d'une « app »   */
+/* que l'utilisateur crée chez Spotify (3 minutes, gratuit), collés    */
+/* une fois dans les Réglages. Le carnet fabrique ses jetons lui-même  */
+/* (flot client_credentials, 1 h de validité, renouvelé silencieusement */
+/* au premier besoin) : rien à recoller, jamais.                       */
+/*                                                                     */
+/* Les deux points d'entrée officiels répondent avec CORS ouvert, donc  */
+/* aucun serveur ni miroir dans l'histoire — contrairement à Apple.     */
+/* Le jeton obtenu ne porte AUCUNE permission sur le compte : il ouvre  */
+/* le catalogue, rien d'autre.                                         */
+/*                                                                     */
+/* Les identifiants vivent dans leur propre clé de stockage (SPAUTH_KEY) */
+/* et non dans carnet:v4 : structurellement hors de l'URL de partage,   */
+/* hors de la sauvegarde en fichier — qui sert aussi à donner son       */
+/* carnet à quelqu'un — et hors de la signature de sauvegarde.         */
+/* ------------------------------------------------------------------ */
+
+const SPAUTH_KEY = "spauth:v1";
+async function loadSpAuth() {
+  try {
+    const r = await window.storage.get(SPAUTH_KEY);
+    if (!r) return null;
+    const d = JSON.parse(r.value);
+    return d && d.id && d.secret ? { id: String(d.id), secret: String(d.secret) } : null;
+  } catch { return null; }
+}
+async function saveSpAuth(a) {
+  try {
+    if (a) await window.storage.set(SPAUTH_KEY, JSON.stringify(a));
+    else if (window.storage.remove) await window.storage.remove(SPAUTH_KEY);
+    else await window.storage.set(SPAUTH_KEY, "null");
+  } catch { /* stockage indisponible */ }
+}
+
+/** Jeton en cache, gardé hors de React (un scan de bibliothèque le
+ *  réutilise des dizaines de fois). Lié au Client ID : changer d'app
+ *  jette le jeton précédent. */
+let spTok = null; // { value, exp, id }
+/** Identifiants refusés : mémorisés pour qu'un scan n'aille pas taper
+ *  cinquante fois un mot de passe faux. */
+let spBadAuth = null; // Client ID refusé
+
+const SP_ERR_AUTH = "identifiants refusés";
+
+/** Jeton d'accès (client_credentials). L'en-tête Basic est la forme
+ *  documentée ; btoa suffit, un Client ID et un secret Spotify sont
+ *  hexadécimaux. */
+async function spAccessToken(auth, ms = 12000) {
+  if (navigator.onLine === false) throw new Error("hors ligne");
+  if (!auth || !auth.id || !auth.secret) throw new Error(SP_ERR_AUTH);
+  if (spBadAuth === auth.id) throw new Error(SP_ERR_AUTH);
+  if (spTok && spTok.id === auth.id && spTok.exp > Date.now()) return spTok.value;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  let res;
+  try {
+    res = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST", signal: ctrl.signal,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: "Basic " + btoa(`${auth.id}:${auth.secret}`),
+      },
+      body: "grant_type=client_credentials",
+    });
+  } catch { throw new Error("service injoignable"); }
+  finally { clearTimeout(t); }
+  // 400/401 : l'app n'existe pas ou le secret est faux — inutile d'insister.
+  if (res.status === 400 || res.status === 401) { spBadAuth = auth.id; throw new Error(SP_ERR_AUTH); }
+  if (!res.ok) throw new Error("service injoignable");
+  const d = await res.json().catch(() => null);
+  if (!d || !d.access_token) throw new Error("service injoignable");
+  spTok = {
+    value: d.access_token, id: auth.id,
+    // Marge d'une minute : un scan long ne doit pas se faire couper au vol.
+    exp: Date.now() + Math.max(60, (Number(d.expires_in) || 3600) - 60) * 1000,
+  };
+  return spTok.value;
+}
+
+/** Les identifiants changent (ou s'effacent) : le jeton et le verdict
+ *  « refusés » ne valent plus. */
+function spAuthReset() { spTok = null; spBadAuth = null; }
+
+/** Résultat Spotify traduit dans la forme des réponses iTunes, pour que
+ *  scoreMatch / classifyAm — le classement d'Apple Music, ses versions
+ *  parasites et ses seuils — s'appliquent tels quels. trackId porte donc
+ *  ici l'id base62 de Spotify. */
+const spAsItunes = (t) => ({
+  trackId: t.id,
+  trackViewUrl: (t.external_urls && t.external_urls.spotify) || spUrl(t.id),
+  trackName: String(t.name || ""),
+  artistName: String((t.artists && t.artists[0] && t.artists[0].name) || ""),
+  collectionName: String((t.album && t.album.name) || ""),
+  // is_playable n'apparaît que sur une piste relinkée ; l'absence du champ
+  // ne veut pas dire « injouable » (market=FR écarte déjà l'indisponible).
+  ...(t.is_playable === false ? { isStreamable: false } : {}),
+});
+
+/** Recherche de piste. Le terme reprend amTerm (décorations d'édition
+ *  retirées) : la syntaxe à champs de Spotify (track:"…" artist:"…") est
+ *  plus fragile qu'utile ici — un titre mal orthographié dans le carnet
+ *  ne trouverait plus rien. */
+async function spSearch(auth, title, artist, ms = 12000) {
+  const token = await spAccessToken(auth);
+  const url = "https://api.spotify.com/v1/search?type=track&limit=10&market=FR&q="
+    + encodeURIComponent(amTerm(title, artist));
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  let res;
+  try { res = await fetch(url, { signal: ctrl.signal, headers: { Authorization: "Bearer " + token } }); }
+  catch { throw new Error("service injoignable"); }
+  finally { clearTimeout(t); }
+  // Jeton périmé plus tôt que prévu (app révoquée, horloge décalée) : une
+  // seule reprise, avec un jeton neuf.
+  if (res.status === 401) {
+    spTok = null;
+    const again = await spAccessToken(auth);
+    res = await fetch(url, { headers: { Authorization: "Bearer " + again } }).catch(() => null);
+    if (!res) throw new Error("service injoignable");
+  }
+  if (res.status === 429) throw new Error("quota Spotify atteint");
+  if (!res.ok) throw new Error("service injoignable");
+  const d = await res.json().catch(() => null);
+  const items = (d && d.tracks && Array.isArray(d.tracks.items)) ? d.tracks.items : [];
+  return items.filter((t) => t && t.id).map(spAsItunes);
+}
+
+/** Recherche + classement, exactement la doctrine d'Apple Music :
+ *  « auto » enregistre sans rien demander, « pick » fait choisir,
+ *  « none » n'a rien de crédible. */
+async function spFind(auth, title, artist) {
+  return classifyAm(await spSearch(auth, title, artist), title, artist);
+}
+
+/** Candidat retenu → champ sp de la chanson. */
+const spFieldsFrom = (r) => ({
+  id: r.trackId, url: spUrl(r.trackId),
+  title: r.trackName, artist: r.artistName,
+});
 
 /* ------------------------------------------------------------------ */
 /* LRCLIB — durée des chansons (https://lrclib.net, service public de  */
@@ -1833,6 +1993,7 @@ const CSS = `
 .field textarea { font-family:'JetBrains Mono'; font-weight:700; font-size:13px; line-height:1.6; min-height:280px; resize:vertical;
   white-space:pre; overflow-wrap:normal; overflow-x:auto; }
 .hint { font-size:12.5px; color:var(--muted); line-height:1.5; margin:0; }
+.hint a { color:var(--amber); text-decoration:underline; text-underline-offset:2px; }
 .actions { display:flex; gap:10px; padding-top:4px; flex-wrap:wrap; }
 .btn { padding:11px 18px; border-radius:9px; font-family:'Barlow Condensed'; font-weight:700; font-size:15px; letter-spacing:.09em;
   text-transform:uppercase; border:1px solid var(--line); background:var(--panel2); text-align:center; }
@@ -2309,7 +2470,7 @@ function Editor({ draft, setDraft, onSave, onCancel, onDelete }) {
   );
 }
 
-function Transfer({ library, tags, lists, engine, backup, dirty, onImport, onShareUrl, onSaved, onClose }) {
+function Transfer({ library, tags, lists, spAuth, engine, backup, dirty, onImport, onShareUrl, onSaved, onClose }) {
   const { songs } = library;
   const [text, setText] = useState("");
   const [msg, setMsg] = useState("");
@@ -2318,9 +2479,10 @@ function Transfer({ library, tags, lists, engine, backup, dirty, onImport, onSha
   const [fileMsg, setFileMsg] = useState("");
   const [pasteOpen, setPasteOpen] = useState(false);
   const fileRef = useRef(null);
-  // Le fichier de sauvegarde porte les grilles, les tags ET les listes ;
-  // l'URL de partage, elle, ne reçoit que le carnet (encodeShare plus bas).
-  const json = useMemo(() => backupJson(songs, tags, lists), [songs, tags, lists]);
+  // Le fichier de sauvegarde porte les grilles, les tags, les listes ET les
+  // identifiants Spotify ; l'URL de partage, elle, ne reçoit que le carnet
+  // (encodeShare plus bas) — c'est elle qu'on donne à quelqu'un.
+  const json = useMemo(() => backupJson(songs, tags, lists, spAuth), [songs, tags, lists, spAuth]);
 
   useEffect(() => {
     let alive = true;
@@ -2349,17 +2511,19 @@ function Transfer({ library, tags, lists, engine, backup, dirty, onImport, onSha
       let lib;
       let addedTags = null;
       let addedLists = null;
+      let addedAuth = null;
       if (/^[\[{]/.test(t)) {
         const parsed = JSON.parse(t);
         lib = normalizeLibrary(parsed);
         addedTags = normalizeTags(parsed && parsed.tags);
         addedLists = normalizeLists(parsed && parsed.lists);
+        addedAuth = normalizeSpAuth(parsed && parsed.spAuth);
       } else {
         const data = extractShareData(t);
         if (!data) throw new Error();
         lib = await decodeShareData(data);
       }
-      onImport(lib.songs, lib, addedTags, addedLists);
+      onImport(lib.songs, lib, addedTags, addedLists, addedAuth);
       const withTags = addedTags && (addedTags.defs.length || Object.keys(addedTags.byKey).length);
       setMsg(`${lib.songs.length} grille(s) ajoutée(s)${withTags ? ", tags compris" : ""}.`);
       if (raw == null) setText("");
@@ -2450,6 +2614,14 @@ function Transfer({ library, tags, lists, engine, backup, dirty, onImport, onSha
                 nom : la dernière sauvegarde est celle du haut, les précédentes se suppriment depuis Fichiers.</>
               : <>La date dans le nom garde la pile lisible ; les anciennes sauvegardes se suppriment à la main.</>}
           </p>
+          {spAuth && (
+            <p className="hint" style={{ marginTop: 6 }}>
+              Ce fichier contient aussi vos <b>identifiants Spotify</b> — c'est ce qui permet
+              à un appareil neuf de retrouver la recherche automatique. Pour donner votre
+              carnet à quelqu'un, passez donc par l'URL de partage plus bas : elle ne les
+              emporte pas.
+            </p>
+          )}
           <p className="hint" style={{ marginTop: 6, color: dirty ? "var(--amber)" : undefined }}>
             {backup
               ? <>Dernière sauvegarde : <b>{dateFmt(backup.at)}</b>{dirty ? " — le carnet a changé depuis." : " — à jour."}</>
@@ -2599,6 +2771,15 @@ export default function Carnet() {
   const [spPaste, setSpPaste] = useState(null); // null | { songId, text } — collage d'un lien Spotify
   const [spBusy, setSpBusy] = useState(false); // vérification oEmbed en cours
   const [spErr, setSpErr] = useState(null); // message d'échec du collage
+  // Identifiants de l'app Spotify de l'utilisateur — leur propre clé de
+  // stockage, jamais carnet:v4 (donc hors URL de partage et hors fichier).
+  const [spAuth, setSpAuth] = useState(null); // null | { id, secret }
+  const [spForm, setSpForm] = useState({ id: "", secret: "" }); // saisie des Réglages
+  const [spPick, setSpPick] = useState(null); // null | { songId, results } — choix manuel de la piste
+  const [spBusyId, setSpBusyId] = useState(null); // recherche Spotify unitaire en cours (id de chanson)
+  const [spFindErr, setSpFindErr] = useState(null); // { id, msg } — échec de la dernière recherche unitaire
+  const [spScan, setSpScan] = useState(null); // null | { done, total, found, ambiguous, missed, running, error? }
+  const spStopRef = useRef(false); // demande d'arrêt du scan Spotify global
   const [amPick, setAmPick] = useState(null); // null | { songId, results } — choix manuel de la piste Apple Music
   const [amBusyId, setAmBusyId] = useState(null); // recherche Apple Music unitaire en cours (id de chanson)
   const [amErr, setAmErr] = useState(null); // { id, msg } — échec de la dernière recherche unitaire
@@ -2664,6 +2845,8 @@ export default function Carnet() {
       if (typeof carnet.listFilter === "string") setListFilter(carnet.listFilter);
       if (carnet.instrument === "piano" || carnet.instrument === "guitar") setInstrument(carnet.instrument);
       if (carnet.player === "apple" || carnet.player === "spotify") setPlayer(carnet.player);
+      const auth = await loadSpAuth();
+      if (auth) { setSpAuth(auth); setSpForm(auth); }
       setReady(true);
       const lib = await loadChordSheetJS();
       if (!alive) return;
@@ -2680,7 +2863,7 @@ export default function Carnet() {
   // Sur iOS, aucune page web ne peut réécrire seule dans un fichier : la
   // sauvegarde reste un geste. À défaut de l'automatiser, l'app signale qu'elle
   // est due — point ambre sur ⇅, état détaillé dans la page Transfert.
-  const currentSig = useMemo(() => signature(backupJson(songs, tags, lists)), [songs, tags, lists]);
+  const currentSig = useMemo(() => signature(backupJson(songs, tags, lists, spAuth)), [songs, tags, lists, spAuth]);
   const dirty = ready && songs.length > 0 && (!backup || backup.sig !== currentSig);
   const markSaved = () => {
     const mark = { at: Date.now(), sig: currentSig };
@@ -3539,9 +3722,14 @@ export default function Carnet() {
   const restoreDefaultTags = () => setTags((t) => mergeTags(t, { defs: DEFAULT_TAGS.map((d) => ({ ...d })), byKey: {} }));
   const missingDefaults = DEFAULT_TAGS.some((d) => !tags.defs.some((x) => x.id === d.id));
 
-  const importLibrary = (list, settings, addedTags, addedLists) => {
+  const importLibrary = (list, settings, addedTags, addedLists, addedAuth) => {
     if (addedTags) setTags((t) => mergeTags(t, addedTags));
     if (addedLists) setLists((l) => mergeLists(l, addedLists));
+    // Un import est une fusion, pas un remplacement : les identifiants de la
+    // sauvegarde ne sont adoptés que si l'appareil n'en a aucun. Une
+    // restauration sur un téléphone neuf les retrouve donc ; le carnet d'un
+    // ami n'écrase pas les vôtres au passage.
+    if (addedAuth && !spAuth) applySpAuth(addedAuth);
     setSongs((prev) => mergeByTitle(prev, list));
     if (settings) {
       if (typeof settings.showChords === "boolean") setShowChords(settings.showChords);
@@ -3634,6 +3822,70 @@ export default function Carnet() {
     });
     setSpPaste(null);
   };
+  /* Identifiants Spotify : enregistrés à part, et tout jeton en cache
+     tombe avec eux. */
+  const applySpAuth = (a) => {
+    spAuthReset();
+    setSpAuth(a); setSpForm(a || { id: "", secret: "" });
+    setSpFindErr(null); setSpScan(null);
+    saveSpAuth(a);
+  };
+  /* Recherche automatique, même doctrine qu'Apple Music : jamais à
+     l'affichage, uniquement sur un geste (menu de la chanson, scan des
+     Réglages), et le classement est le même (classifyAm). */
+  const spMsg = (e) => {
+    const m = e && e.message;
+    if (m === "hors ligne") return "Hors ligne";
+    if (m === SP_ERR_AUTH) return "Identifiants refusés";
+    if (m === "quota Spotify atteint") return "Quota Spotify atteint";
+    return "Service injoignable";
+  };
+  const spSearchOne = async (song, { pickAlways = false } = {}) => {
+    setSpBusyId(song.id); setSpFindErr(null);
+    try {
+      const c = await spFind(spAuth, song.title, song.artist);
+      if (c.kind === "auto" && !pickAlways) setSp(song.id, spFieldsFrom(c.best));
+      else if (c.top.length) setSpPick({ songId: song.id, results: c.top });
+      else if (pickAlways) setSpFindErr({ id: song.id, msg: "Rien d'autre de crédible" }); // on garde le lien actuel
+      else setSp(song.id, { none: true });
+    } catch (e) {
+      setSpFindErr({ id: song.id, msg: spMsg(e) });
+    } finally { setSpBusyId(null); }
+  };
+  const spScanAll = async () => {
+    // Figé au départ, comme le scan d'Apple : les ambigus restent à
+    // trancher depuis la chanson, les « non trouvé » repassent.
+    const targets = songs.filter((s) => !s.sp || s.sp.none);
+    if (!targets.length || (spScan && spScan.running)) return;
+    spStopRef.current = false;
+    setSpScan({ done: 0, total: targets.length, found: 0, ambiguous: 0, missed: 0, running: true });
+    const bump = (k) => setSpScan((p) => p && { ...p, [k]: p[k] + 1 });
+    for (let i = 0; i < targets.length; i++) {
+      if (spStopRef.current) break;
+      const s = targets[i];
+      try {
+        let c;
+        try { c = await spFind(spAuth, s.title, s.artist); }
+        catch (e) {
+          // Des identifiants refusés ne se réparent pas en réessayant.
+          if (e && e.message === SP_ERR_AUTH) throw e;
+          await sleep(2000);
+          c = await spFind(spAuth, s.title, s.artist);
+        }
+        if (c.kind === "auto") { setSp(s.id, spFieldsFrom(c.best)); bump("found"); }
+        else if (c.kind === "pick") bump("ambiguous"); // rien d'enregistré : à régler depuis la chanson
+        else { setSp(s.id, { none: true }); bump("missed"); }
+      } catch (e) {
+        setSpScan((p) => p && { ...p, running: false, error: spMsg(e) });
+        return;
+      }
+      bump("done");
+      // L'API officielle est large ; 250 ms suffisent à rester poli, là où
+      // les miroirs d'Apple imposent 3,5 s.
+      if (i < targets.length - 1) await sleep(250);
+    }
+    setSpScan((p) => p && { ...p, running: false });
+  };
   /* LRCLIB — même doctrine : uniquement sur un geste (menu de la chanson,
      premier ▶ d'une chanson sans durée, scan des Réglages). */
   const setLrc = (songId, lrc) => setSongs((prev) => prev.map((s) => {
@@ -3710,6 +3962,7 @@ export default function Carnet() {
   // Réseau : offline est null dans un aperçu d'artefact — considéré en ligne.
   const online = !offline || offline.online !== false;
   const amMissing = songs.filter((s) => !s.am || s.am.none).length;
+  const spMissing = songs.filter((s) => !s.sp || s.sp.none).length;
   /* Lecture : un seul point de passage pour les deux services, le réglage
      global tranche. Chez Apple comme chez Spotify, un lien existe toujours
      — la piste appariée, sinon la recherche pré-remplie. */
@@ -4199,19 +4452,42 @@ export default function Carnet() {
               <div className="mrow">
                 <span className="mlab">Spotify</span>
                 <div className="amcell">
+                  {spFindErr && spFindErr.id === current.id && <span className="amnone">{spFindErr.msg}</span>}
                   {current.sp && current.sp.url ? (
                     <>
                       <a className="btn slim" href={current.sp.url} target="_blank" rel="noopener noreferrer"
                         title={`${current.sp.title || current.title}${current.sp.artist ? ` — ${current.sp.artist}` : ""}`}><PlayIcon service="spotify" /> Ouvrir</a>
-                      <button className="btn slim ghost" title="Coller un autre lien, ou retirer celui-ci"
-                        onClick={() => openSpPaste(current)}>Changer</button>
+                      {/* Avec identifiants, « Changer » cherche d'autres
+                          versions comme chez Apple ; sans, il ouvre le
+                          collage — le seul moyen de corriger à la main. */}
+                      <button className="btn slim ghost" disabled={spBusyId === current.id}
+                        title={spAuth ? "Choisir une autre version parmi les meilleurs résultats" : "Coller un autre lien, ou retirer celui-ci"}
+                        onClick={() => (spAuth && online ? spSearchOne(current, { pickAlways: true }) : openSpPaste(current))}>
+                        {spBusyId === current.id ? "…" : "Changer"}
+                      </button>
+                    </>
+                  ) : spAuth ? (
+                    <>
+                      {current.sp && current.sp.none && !(spFindErr && spFindErr.id === current.id)
+                        && <span className="amnone">Non trouvé</span>}
+                      <button className="btn slim" disabled={!online || spBusyId === current.id}
+                        title={online ? "Chercher cette chanson sur Spotify" : "Hors ligne"}
+                        onClick={() => spSearchOne(current)}>
+                        {spBusyId === current.id ? "Recherche…"
+                          : current.sp && current.sp.none ? "Réessayer"
+                            : <><PlayIcon service="spotify" /> Rechercher</>}
+                      </button>
+                      <button className="btn slim ghost" title="Mémoriser la piste exacte : coller son lien copié depuis Spotify"
+                        onClick={() => openSpPaste(current)}>Coller</button>
                     </>
                   ) : (
                     <>
+                      {/* Sans identifiants : la recherche pré-remplie dans
+                          l'app, et le collage. Libellés courts — « Coller un
+                          lien » ferait passer la ligne sur deux étages à
+                          375 px. */}
                       <a className="btn slim" href={spLink(current)} target="_blank" rel="noopener noreferrer"
                         title="Ouvrir Spotify sur une recherche pré-remplie"><PlayIcon service="spotify" /> Chercher</a>
-                      {/* Libellés courts : « Coller un lien » ferait passer la
-                          ligne sur deux étages à 375 px. */}
                       <button className="btn slim ghost" title="Mémoriser la piste exacte : coller son lien copié depuis Spotify"
                         onClick={() => openSpPaste(current)}>Coller</button>
                     </>
@@ -4452,6 +4728,37 @@ export default function Carnet() {
               </div>
             </div>
           )}
+          {spPick && (
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Choisir la piste Spotify"
+              onClick={(e) => { if (e.target === e.currentTarget) setSpPick(null); }}>
+              <div className="modalbox">
+                <div className="modalicon"><PlayIcon service="spotify" /></div>
+                <h2>Spotify</h2>
+                <p>Plusieurs pistes ressemblent — laquelle est la bonne ?</p>
+                <div className="qdlist amlist">
+                  {spPick.results.map((r) => (
+                    <button className="qdrow amchoice" key={r.trackId}
+                      onClick={() => { setSp(spPick.songId, spFieldsFrom(r)); setSpPick(null); }}>
+                      <div className="qdt">
+                        <b>{r.trackName}</b>
+                        <i>{r.artistName}{r.collectionName ? ` — ${r.collectionName}` : ""}</i>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <div className="actions" style={{ justifyContent: "center" }}>
+                  {current && current.sp && current.sp.url ? (
+                    <button className="btn ghost" title="Aucune de ces pistes : oublier le lien actuel"
+                      onClick={() => { setSp(spPick.songId, null); setSpPick(null); }}>Retirer le lien</button>
+                  ) : (
+                    <button className="btn ghost" title="Aucune de ces pistes n'est la bonne"
+                      onClick={() => { setSp(spPick.songId, { none: true }); setSpPick(null); }}>Aucun de ceux-ci</button>
+                  )}
+                  <button className="btn" onClick={() => setSpPick(null)}>Annuler</button>
+                </div>
+              </div>
+            </div>
+          )}
           {spPaste && (
             <div className="modal" role="dialog" aria-modal="true" aria-label="Coller un lien Spotify"
               onClick={(e) => { if (e.target === e.currentTarget) setSpPaste(null); }}>
@@ -4532,7 +4839,7 @@ export default function Carnet() {
       )}
 
       {view === "transfer" && (
-        <Transfer library={library} tags={tags} lists={lists} engine={engine} backup={backup} dirty={dirty}
+        <Transfer library={library} tags={tags} lists={lists} spAuth={spAuth} engine={engine} backup={backup} dirty={dirty}
           onClose={() => setView("lib")} onImport={importLibrary} onShareUrl={shareUrl} onSaved={markSaved} />
       )}
 
@@ -4666,16 +4973,89 @@ export default function Carnet() {
               </div>
             </div>
             {spotify && (
-              <div className="field">
-                <p className="hint">
-                  Spotify n'ouvre aucune recherche sans compte : le bouton vert ouvre donc
-                  l'app sur une recherche déjà remplie (titre + artiste), qui tombe sur la
-                  chanson. Pour figer la piste exacte, collez son lien une fois — <b>⋯ →
-                  Partager → Copier le lien</b> dans Spotify, puis « Coller » dans le menu de
-                  la chanson. Ces liens suivent le carnet dans la sauvegarde en fichier,
-                  comme ceux d'Apple Music.
-                </p>
-              </div>
+              <>
+                <div className="field">
+                  <p className="hint">
+                    Sans identifiants, le bouton vert ouvre l'app Spotify sur une recherche
+                    déjà remplie (titre + artiste) — et la piste exacte se colle chanson par
+                    chanson (<b>⋯ → Partager → Copier le lien</b> dans Spotify, puis
+                    « Coller » dans le menu de la chanson).
+                  </p>
+                </div>
+                <div className="field">
+                  <label>Recherche automatique Spotify</label>
+                  <p className="hint">
+                    Pour que le carnet trouve les liens tout seul, il lui faut une « app »
+                    Spotify à votre nom : sur <a href="https://developer.spotify.com/dashboard"
+                    target="_blank" rel="noopener noreferrer">developer.spotify.com/dashboard</a>,
+                    « Create an App », un nom, une description, les conditions cochées — puis
+                    recopiez ici le <b>Client ID</b> et le <b>Client Secret</b> de sa page.
+                    Trois minutes, une fois, gratuit. Le carnet fabrique ensuite ses jetons
+                    seul.
+                    Ces identifiants n'ouvrent que le catalogue, <b>aucune donnée de votre
+                    compte</b>. Ils entrent dans la sauvegarde en fichier — un appareil neuf
+                    retrouve ainsi la recherche automatique —, mais jamais dans l'URL de
+                    partage : c'est elle qu'on donne à quelqu'un.
+                  </p>
+                </div>
+                <div className="field">
+                  <input value={spForm.id} placeholder="Client ID" aria-label="Client ID Spotify"
+                    autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off"
+                    onChange={(e) => setSpForm({ ...spForm, id: e.target.value.trim() })} />
+                </div>
+                <div className="field">
+                  <input value={spForm.secret} placeholder="Client Secret" aria-label="Client Secret Spotify"
+                    type="password" autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off"
+                    onChange={(e) => setSpForm({ ...spForm, secret: e.target.value.trim() })} />
+                </div>
+                <div className="actions">
+                  <button className="btn" disabled={!spForm.id || !spForm.secret
+                    || (spAuth && spAuth.id === spForm.id && spAuth.secret === spForm.secret)}
+                    title="Garder ces identifiants sur cet appareil"
+                    onClick={() => applySpAuth({ id: spForm.id, secret: spForm.secret })}>Enregistrer</button>
+                  {spAuth && (
+                    <button className="btn danger" title="Oublier ces identifiants — les liens déjà trouvés restent"
+                      onClick={() => applySpAuth(null)}>Effacer</button>
+                  )}
+                </div>
+                {spAuth && (
+                  <>
+                    <div className="field">
+                      <p className="hint">
+                        Identifiants en place. Cherche chaque chanson dans le catalogue
+                        Spotify : seules les correspondances sûres sont enregistrées, les cas
+                        ambigus se règlent depuis le menu de la chanson — le même classement
+                        qu'Apple Music, mais sans son attente (l'API officielle est directe).
+                      </p>
+                    </div>
+                    <div className="actions">
+                      {spScan && spScan.running ? (
+                        <>
+                          <span className="tag">{spScan.done} / {spScan.total}</span>
+                          <button className="btn danger" onClick={() => { spStopRef.current = true; }}>Stop</button>
+                        </>
+                      ) : (
+                        /* Nommer le service : le scan d'Apple Music, plus bas,
+                           porterait sinon le même libellé. */
+                        <button className="btn" disabled={!online || !spMissing}
+                          title={online ? "Chercher un lien pour chaque chanson qui n'en a pas encore" : "Hors ligne"}
+                          onClick={spScanAll}>
+                          Chercher sur Spotify{spMissing ? ` (${spMissing})` : ""}
+                        </button>
+                      )}
+                    </div>
+                    {spScan && !spScan.running && (
+                      <div className="field">
+                        <p className="hint">
+                          {spScan.error
+                            ? `Interrompu (${spScan.error}) après ${spScan.done} chanson${spScan.done > 1 ? "s" : ""} examinée${spScan.done > 1 ? "s" : ""}.`
+                            : `${spScan.done} chanson${spScan.done > 1 ? "s" : ""} examinée${spScan.done > 1 ? "s" : ""} : ${spScan.found} lien${spScan.found > 1 ? "s" : ""} trouvé${spScan.found > 1 ? "s" : ""}, ${spScan.ambiguous} à choisir depuis la chanson, ${spScan.missed} introuvable${spScan.missed > 1 ? "s" : ""}.`}
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
             )}
             <div className="field">
               <label>Liens Apple Music</label>
