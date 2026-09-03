@@ -111,3 +111,22 @@ export function vuIcon(size, { background, accent, dim, bars = [0.45, 0.72, 1, 0
   });
   return c.toPng();
 }
+
+/** L'icône du Carnet de poésie : quatre traits de longueurs inégales — un
+ *  quatrain vu de loin —, le deuxième en accent. Comme le VU-mètre, le motif
+ *  tient dans les 60 % centraux, à l'abri du masque circulaire d'Android. */
+export function versesIcon(size, { background, accent, dim }) {
+  const c = canvas(size, background);
+  const box = size * 0.6;
+  const left = (size - box) / 2;
+  const top = (size - box) / 2;
+  const lines = [1, 0.62, 0.86, 0.44];
+  const gap = box / (lines.length * 2.2);
+  const height = (box - gap * (lines.length - 1)) / lines.length;
+  const radius = height / 2;
+  lines.forEach((ratio, i) => {
+    c.roundedRect(left, top + i * (height + gap), Math.max(height, box * ratio), height,
+      radius, i === 1 ? accent : dim || accent);
+  });
+  return c.toPng();
+}

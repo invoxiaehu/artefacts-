@@ -1,0 +1,10 @@
+{
+  "name": "Carnet de poésie",
+  "short_name": "Poésie",
+  "description": "Carnet de poèmes : import depuis Wikisource, lecture au calme, révision vers à vers. Fonctionne sans connexion.",
+  "background": "#14131A",
+  "accent": "#D8C9A3",
+  "accent_dim": "#6E6450",
+  "icon": "verses",
+  "fonts": "https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Barlow+Condensed:wght@500;600;700&display=swap"
+}

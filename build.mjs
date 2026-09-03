@@ -9,7 +9,7 @@ import { build } from "esbuild";
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { vuIcon } from "./build/png.mjs";
+import { versesIcon, vuIcon } from "./build/png.mjs";
 
 const DIST = "dist";
 const sha8 = (data) => createHash("sha256").update(data).digest("hex").slice(0, 8);
@@ -108,9 +108,12 @@ async function buildPwa({ slug, dir, out, pwa, appVersion }) {
     fingerprint.push(sha8(bytes));
   }
 
+    // Motif de l'icône, choisi par pwa.json ; « vu » par défaut, pour que les
+  // artefacts déjà publiés gardent exactement la leur.
+  const draw = pwa.icon === "verses" ? versesIcon : vuIcon;
   const icons = [];
   for (const icon of ICONS) {
-    const png = vuIcon(icon.size, { background: pwa.background, accent: pwa.accent, dim: pwa.accent_dim });
+    const png = draw(icon.size, { background: pwa.background, accent: pwa.accent, dim: pwa.accent_dim });
     await writeFile(path.join(out, icon.file), png);
     fingerprint.push(sha8(png));
     if (icon.purpose) {
