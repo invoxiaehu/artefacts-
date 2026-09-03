@@ -711,6 +711,9 @@ function normalizeLibrary(data) {
       // vraisemblable (amNorm) — il arrive par la sauvegarde en fichier,
       // l'URL de partage ne le transporte pas.
       ...(amNorm(s.am) ? { am: amNorm(s.am) } : {}),
+      // Lien Spotify collé à la main (spNorm) : même sort que l'appariement
+      // Apple Music — il voyage par la sauvegarde en fichier, pas par l'URL.
+      ...(spNorm(s.sp) ? { sp: spNorm(s.sp) } : {}),
       // Synchronisation LRCLIB : la durée (quelques octets) voyage partout,
       // URL de partage comprise ; les paroles horodatées (lrc.lines)
       // arrivent par la sauvegarde en fichier, encodeShare les retire.
@@ -730,11 +733,13 @@ async function encodeShare(library) {
     throw new Error("CompressionStream indisponible dans ce navigateur");
   }
   const json = JSON.stringify({
-    // Les liens Apple Music (am) restent hors de l'URL, comme les tags et
-    // les listes : ils voyagent par la sauvegarde en fichier, et l'URL de
-    // partage reste courte. Même sort pour les paroles synchronisées
-    // (lrc.lines, plusieurs Ko par chanson) — la durée seule voyage.
-    songs: library.songs.map(({ id, am, lrc, ...rest }) => (lrc
+    // Les liens des services de musique (am, sp) restent hors de l'URL,
+    // comme les tags et les listes : ils voyagent par la sauvegarde en
+    // fichier, et l'URL de partage reste courte. Même sort pour les paroles
+    // synchronisées (lrc.lines, plusieurs Ko par chanson) — la durée seule
+    // voyage. Le choix du service (player) reste lui aussi hors de l'URL :
+    // c'est l'abonnement de celui qui joue, pas une propriété du carnet.
+    songs: library.songs.map(({ id, am, sp, lrc, ...rest }) => (lrc
       ? { ...rest, lrc: lrc.none ? { none: true } : { dur: lrc.dur } }
       : rest)),
     showChords: library.showChords,
@@ -1244,6 +1249,98 @@ const amLink = (s) => (s.am && s.am.url)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ------------------------------------------------------------------ */
+/* Spotify — l'autre service, choisi par le réglage global (player).   */
+/*                                                                     */
+/* Pas de recherche automatique ici, et ce n'est pas un oubli :        */
+/* contrairement à l'index iTunes, l'API de recherche de Spotify       */
+/* réclame un jeton, et l'endpoint anonyme du lecteur web répond       */
+/* explicitement que son usage « n'est pas permis par les conditions   */
+/* développeur » — hors de question de passer par là. Deux voies       */
+/* restent, toutes deux sans compte ni clé :                           */
+/*                                                                     */
+/*  1. le lien de RECHERCHE pré-rempli (spLink) — construit hors ligne, */
+/*     toujours disponible : sur iPhone il ouvre l'app Spotify sur la  */
+/*     chanson, comme le lien de secours d'Apple Music ;               */
+/*  2. le lien de PISTE exact, collé une fois depuis Spotify (Partager */
+/*     → Copier le lien) puis mémorisé dans la chanson (champ sp),     */
+/*     nommé et validé par l'oEmbed public de Spotify — le seul point  */
+/*     d'entrée officiel qui réponde sans jeton, CORS ouvert.          */
+/* ------------------------------------------------------------------ */
+
+/** Un id Spotify est une chaîne base62 de 22 caractères (pas un nombre,
+ *  contrairement au trackId d'Apple). Formes acceptées au collage :
+ *  open.spotify.com/track/<id> (avec un éventuel /intl-fr et un ?si=…),
+ *  et l'URI spotify:track:<id> que donne « Copier l'URI Spotify ». */
+const SP_ID = "[A-Za-z0-9]{22}";
+const SP_FROM_URL = new RegExp(`^https?://open\\.spotify\\.com/(?:intl-[a-z-]+/)?track/(${SP_ID})`);
+const SP_FROM_URI = new RegExp(`^spotify:track:(${SP_ID})$`);
+const spUrl = (id) => `https://open.spotify.com/track/${id}`;
+
+/** Id de piste dans ce que l'utilisateur a collé — un lien complet, une
+ *  URI, ou l'id nu. Rend null pour tout le reste (lien d'album, de
+ *  playlist, d'artiste : l'app est par chanson). */
+function spIdFrom(raw) {
+  const t = String(raw || "").trim();
+  if (!t) return null;
+  const m = SP_FROM_URL.exec(t) || SP_FROM_URI.exec(t);
+  if (m) return m[1];
+  return new RegExp(`^${SP_ID}$`).test(t) ? t : null;
+}
+
+/** Champ sp venu d'un import : même contrat qu'amNorm — le marqueur
+ *  « non trouvé », ou un appariement dont l'id est un vrai id Spotify.
+ *  L'URL est toujours reconstruite à partir de l'id, pour qu'un lien de
+ *  partage traînant un ?si=… (jeton de suivi) ne se propage pas. */
+function spNorm(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  if (raw.none === true) return { none: true };
+  const id = spIdFrom(raw.id) || spIdFrom(raw.url);
+  if (!id) return null;
+  return {
+    id, url: spUrl(id),
+    title: String(raw.title || "").slice(0, 200),
+    artist: String(raw.artist || "").slice(0, 200),
+  };
+}
+
+/** Terme de recherche : le titre et l'artiste du carnet, complétés par
+ *  l'appariement Apple Music quand il existe (artiste manquant, titre
+ *  approximatif — Apple a la graphie du catalogue). Pas de translittération
+ *  ici, contrairement à amTerm : le lien part directement chez Spotify,
+ *  aucun miroir ne peut mutiler les accents. */
+const spTerm = (s) => {
+  const title = String(s.title || "").trim();
+  const artist = String(s.artist || "").trim()
+    || (s.am && !s.am.none ? String(s.am.artist || "").trim() : "");
+  return `${title} ${artist}`.replace(/\s+/g, " ").trim();
+};
+
+/** Lien d'ouverture Spotify : la piste mémorisée quand elle existe, sinon
+ *  la recherche pré-remplie. Aucun appel réseau — le bouton vert marche
+ *  même en avion (le lien s'ouvre au retour du réseau). */
+const spLink = (s) => (s.sp && s.sp.url)
+  ? s.sp.url
+  : "https://open.spotify.com/search/" + encodeURIComponent(spTerm(s));
+
+/** oEmbed public : rend le titre de la piste (404 si l'id n'existe pas).
+ *  Sert à nommer et à valider un lien collé — jamais à l'affichage. */
+async function spOEmbed(id, ms = 8000) {
+  if (navigator.onLine === false) throw new Error("hors ligne");
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch("https://open.spotify.com/oembed?url=" + encodeURIComponent(spUrl(id)), { signal: ctrl.signal });
+    if (res.status === 404) throw new Error("piste inconnue");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+    return { title: String((d && d.title) || "").slice(0, 200) };
+  } catch (e) {
+    if (e && (e.message === "piste inconnue" || e.message === "hors ligne")) throw e;
+    throw new Error("service injoignable");
+  } finally { clearTimeout(t); }
+}
+
+/* ------------------------------------------------------------------ */
 /* LRCLIB — durée des chansons (https://lrclib.net, service public de  */
 /* paroles synchronisées, sans compte ni clé, CORS ouvert). On n'en    */
 /* retient que la durée : le défilement ▶ se cale dessus pour parcourir */
@@ -1465,6 +1562,9 @@ const CSS = `
 .cb { --bg:#111216; --panel:#181A1F; --panel2:#20232A; --line:#2E323B;
   --ink:#ECE9E3; --muted:#878C97; --amber:#E9B44C; --amber-dim:#8A6B2A; --hot:#C8503C;
   --ok:#5FA971; --ok-soft:rgba(95,169,113,.14);
+  /* Couleur du triangle de lecture, par service : le rouge de la maison pour
+     Apple Music, le vert de marque pour Spotify. */
+  --spot:#1DB954;
   /* Voiles translucides de l'accent — fonds actifs, survols, surlignage.
      En variables pour que le mode clair les recolore avec son propre accent. */
   --acc-soft:rgba(233,180,76,.12); --acc-faint:rgba(233,180,76,.07); --acc-glow:rgba(233,180,76,.16);
@@ -1482,7 +1582,10 @@ const CSS = `
 .cb.light { --bg:#F5F6F9; --panel:#FFFFFF; --panel2:#ECEEF4; --line:#D6DAE3;
   --ink:#1D1F26; --muted:#6B7280; --amber:#2E5BD7; --amber-dim:#93A8E8; --hot:#C23A2B;
   --ok:#1E7C46; --ok-soft:rgba(30,124,70,.10);
-  --acc-soft:rgba(46,91,215,.10); --acc-faint:rgba(46,91,215,.06); --acc-glow:rgba(46,91,215,.14); }
+  --acc-soft:rgba(46,91,215,.10); --acc-faint:rgba(46,91,215,.06); --acc-glow:rgba(46,91,215,.14);
+  /* Le #1DB954 de Spotify pâlit sur fond blanc (contraste 2,3:1) : assombri
+     comme le reste de la palette claire, la marque reste reconnaissable. */
+  --spot:#0E8F45; }
 .cb.light .btn.primary { color:#FFF; }
 .cb.light .speedfly { background:rgba(255,255,255,.94); box-shadow:0 4px 16px rgba(0,0,0,.18); }
 .cb.light .sizefly span { box-shadow:0 4px 16px rgba(0,0,0,.18); }
@@ -1603,6 +1706,9 @@ const CSS = `
 .seg2 button { padding:8px 13px; font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
 .seg2 button.on { color:var(--amber); background:var(--acc-soft); }
 .seg2 .sortdir { font-style:normal; margin-left:5px; font-size:11px; }
+/* Le triangle du service dans le switch : le 10 px du mono le rendrait
+   invisible — taille fixe, alignée sur la capitale. */
+.seg2 .amico { width:12px; height:12px; vertical-align:-0.1em; margin-right:5px; }
 .btn.slim { padding:8px 14px; font-size:13.5px; }
 .card h3 { margin:0; font-family:'Barlow Condensed'; font-weight:600; font-size:21px; letter-spacing:.03em; text-transform:uppercase; line-height:1.05; }
 .card p { margin:2px 0 0; font-size:12.5px; color:var(--muted); }
@@ -1817,10 +1923,12 @@ const CSS = `
 .qdd b { font-weight:700; margin-left:4px; color:var(--ink); }
 .qdd b.up { color:var(--ok); }
 .qdd b.dn { color:var(--hot); }
-/* Apple Music : triangle de lecture rouge foncé (AmIcon). Le lien de carte
-   reprend le gabarit de .carddel ; les classes .iconbtn/.btn sont pensées
-   pour <button>, une ancre a besoin du reset texte. */
+/* Triangle de lecture du service de musique (PlayIcon) : rouge foncé pour
+   Apple Music, vert pour Spotify. Le lien de carte reprend le gabarit de
+   .carddel ; les classes .iconbtn/.btn sont pensées pour <button>, une ancre
+   a besoin du reset texte. */
 .amico { width:1em; height:1em; fill:var(--hot); display:inline-block; vertical-align:-0.12em; }
+.amico.spot { fill:var(--spot); }
 a.iconbtn, a.btn { text-decoration:none; }
 a.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; color:var(--ink); }
 .cardam { flex:0 0 auto; display:grid; place-items:center; padding:0 12px; font-size:15px;
@@ -1843,11 +1951,13 @@ a.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px
 
 /* ------------------------------------------------------------------ */
 
-/** Triangle « lecture » plein, rouge foncé — l'icône Apple Music partout
- *  (l'emoji pomme jurait avec la palette). 1em : suit la taille du texte. */
-function AmIcon() {
+/** Triangle « lecture » plein — l'icône du service de musique partout (les
+ *  emoji de marque juraient avec la palette). Rouge foncé pour Apple Music,
+ *  vert pour Spotify : la couleur dit à quel service le lien mène.
+ *  1em : suit la taille du texte. */
+function PlayIcon({ service }) {
   return (
-    <svg className="amico" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+    <svg className={"amico" + (service === "spotify" ? " spot" : "")} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <path d="M4.5 2.7v10.6c0 .5.55.8.97.53l8.3-5.3a.63.63 0 0 0 0-1.06l-8.3-5.3a.63.63 0 0 0-.97.53z" />
     </svg>
   );
@@ -2483,6 +2593,12 @@ export default function Carnet() {
   const quizPoolRef = useRef(null); // ids figés au départ de la partie (null = toute la sous-liste affichée)
   const quizStatsRef = useRef(new Map()); // id → { title, artist, before, after, asked, correct } de la partie
   const [backup, setBackup] = useState(null); // { at, sig } de la dernière sauvegarde en fichier
+  // Service de musique, réglage GLOBAL (jamais par chanson) : il décide où
+  // mènent tous les liens de lecture et la couleur du triangle.
+  const [player, setPlayer] = useState("apple"); // "apple" | "spotify"
+  const [spPaste, setSpPaste] = useState(null); // null | { songId, text } — collage d'un lien Spotify
+  const [spBusy, setSpBusy] = useState(false); // vérification oEmbed en cours
+  const [spErr, setSpErr] = useState(null); // message d'échec du collage
   const [amPick, setAmPick] = useState(null); // null | { songId, results } — choix manuel de la piste Apple Music
   const [amBusyId, setAmBusyId] = useState(null); // recherche Apple Music unitaire en cours (id de chanson)
   const [amErr, setAmErr] = useState(null); // { id, msg } — échec de la dernière recherche unitaire
@@ -2547,6 +2663,7 @@ export default function Carnet() {
       if (carnet.theme === "dark" || carnet.theme === "light") setTheme(carnet.theme);
       if (typeof carnet.listFilter === "string") setListFilter(carnet.listFilter);
       if (carnet.instrument === "piano" || carnet.instrument === "guitar") setInstrument(carnet.instrument);
+      if (carnet.player === "apple" || carnet.player === "spotify") setPlayer(carnet.player);
       setReady(true);
       const lib = await loadChordSheetJS();
       if (!alive) return;
@@ -2556,7 +2673,7 @@ export default function Carnet() {
     return () => { alive = false; };
   }, []);
 
-  useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort, sortDir, barOpen, instrument, theme, listFilter }); }, [songs, showChords, size, speed, sort, sortDir, barOpen, instrument, theme, listFilter, ready]);
+  useEffect(() => { if (ready) saveLibrary({ songs, showChords, size, speed, sort, sortDir, barOpen, instrument, theme, listFilter, player }); }, [songs, showChords, size, speed, sort, sortDir, barOpen, instrument, theme, listFilter, player, ready]);
   useEffect(() => { if (ready) saveTags(tags); }, [tags, ready]);
   useEffect(() => { if (ready) saveLists(lists); }, [lists, ready]);
 
@@ -3188,14 +3305,15 @@ export default function Carnet() {
     if (current) {
       const renamed = { title, artist: draft.artist.trim() };
       // Titre ou artiste réellement changés (même critère que les ancres de
-      // tags et de listes) : l'appariement Apple Music ne vaut plus — y
-      // compris un « non trouvé », la nouvelle orthographe mérite sa chance.
+      // tags et de listes) : les liens Apple Music et Spotify ne valent plus
+      // — y compris un « non trouvé », la nouvelle orthographe mérite sa
+      // chance.
       const moved = songKey(current) !== songKey(renamed);
       moveTags(songKey(current), songKey(renamed));
       moveLists(songKey(current), songKey(renamed));
       setSongs(songs.map((s) => {
         if (s.id !== current.id) return s;
-        const { am, ...rest } = s;
+        const { am, sp, ...rest } = s;
         return { ...(moved ? rest : s), ...renamed, body: draft.body };
       }));
     } else {
@@ -3464,6 +3582,58 @@ export default function Carnet() {
       setAmErr({ id: song.id, msg: e && e.message === "hors ligne" ? "Hors ligne" : "Service injoignable" });
     } finally { setAmBusyId(null); }
   };
+  /* Spotify. Rien à chercher automatiquement (voir le module Spotify) :
+     l'appariement exact vient d'un lien collé, vérifié par l'oEmbed public
+     — et le bouton de lecture marche de toute façon, sur la recherche
+     pré-remplie. */
+  const setSp = (songId, sp) => setSongs((prev) => prev.map((s) => {
+    if (s.id !== songId) return s;
+    if (!sp) { const { sp: dropped, ...rest } = s; return rest; }
+    return { ...s, sp };
+  }));
+  const openSpPaste = (song) => {
+    setSpErr(null);
+    setSpPaste({ songId: song.id, text: song.sp && song.sp.url ? song.sp.url : "" });
+  };
+  /* Coup de pouce iPhone : le presse-papiers se lit d'un bouton quand le
+     navigateur le permet (Safari demande confirmation) — sinon le champ
+     reste la voie normale. */
+  const spPasteFromClipboard = async () => {
+    try {
+      const t = await navigator.clipboard.readText();
+      setSpErr(null);
+      setSpPaste((p) => p && { ...p, text: String(t || "").trim() });
+    } catch { setSpErr("Presse-papiers inaccessible — collez le lien dans le champ."); }
+  };
+  /* Le lien est enregistré même si l'oEmbed ne répond pas : l'id est valide,
+     le lien ouvrira la bonne piste ; seul son nom manquera. */
+  const spSave = async () => {
+    if (!spPaste) return;
+    const id = spIdFrom(spPaste.text);
+    if (!id) {
+      setSpErr("Lien Spotify de piste attendu (open.spotify.com/track/… ou spotify:track:…).");
+      return;
+    }
+    const song = songs.find((s) => s.id === spPaste.songId);
+    setSpBusy(true); setSpErr(null);
+    let named = null;
+    try { named = await spOEmbed(id); }
+    catch (e) {
+      if (e && e.message === "piste inconnue") {
+        setSpBusy(false);
+        setSpErr("Spotify ne connaît pas cette piste — lien tronqué ?");
+        return;
+      }
+      /* hors ligne ou service injoignable : on garde le lien tel quel */
+    }
+    setSpBusy(false);
+    setSp(spPaste.songId, {
+      id, url: spUrl(id),
+      title: (named && named.title) || (song ? song.title : ""),
+      artist: song ? (song.artist || "") : "",
+    });
+    setSpPaste(null);
+  };
   /* LRCLIB — même doctrine : uniquement sur un geste (menu de la chanson,
      premier ▶ d'une chanson sans durée, scan des Réglages). */
   const setLrc = (songId, lrc) => setSongs((prev) => prev.map((s) => {
@@ -3540,6 +3710,19 @@ export default function Carnet() {
   // Réseau : offline est null dans un aperçu d'artefact — considéré en ligne.
   const online = !offline || offline.online !== false;
   const amMissing = songs.filter((s) => !s.am || s.am.none).length;
+  /* Lecture : un seul point de passage pour les deux services, le réglage
+     global tranche. Chez Apple comme chez Spotify, un lien existe toujours
+     — la piste appariée, sinon la recherche pré-remplie. */
+  const spotify = player === "spotify";
+  const playLink = (s) => (spotify ? spLink(s) : amLink(s));
+  const linked = (s) => Boolean(spotify ? (s.sp && s.sp.url) : (s.am && s.am.url));
+  const playTitle = (s) => (spotify
+    ? (s.sp && s.sp.url
+      ? `Écouter sur Spotify — ${s.sp.title || s.title}`
+      : "Chercher cette chanson dans Spotify")
+    : (s.am && s.am.url
+      ? `Écouter sur Apple Music — ${s.am.title}`
+      : "Chercher cette chanson dans Apple Music"));
   const lrcMissing = songs.filter((s) => !s.lrc || s.lrc.none).length;
   const offlineHint = !offline || !offline.supported
     ? "Indisponible ici : garder l'application en cache demande un service worker, donc une page servie en HTTPS — c'est le cas sur GitHub Pages, pas dans un aperçu d'artefact."
@@ -3609,12 +3792,11 @@ export default function Carnet() {
             <button className="iconbtn" disabled={!showChords || !events.length}
               title="Accords un par un, en diagrammes guitare ou piano"
               onClick={() => openFlow(0)}>🎼</button>
-            {/* Apple Music en dernier : c'est la sortie de l'app, pas une action
-                sur la chanson — elle mérite le bord, après les outils de jeu. */}
-            <a className="iconbtn" href={amLink(current)} target="_blank" rel="noopener noreferrer"
-              title={current.am && current.am.url
-                ? `Écouter sur Apple Music — ${current.am.title}`
-                : "Chercher cette chanson dans Apple Music"}><AmIcon /></a>
+            {/* Le service de musique en dernier : c'est la sortie de l'app, pas
+                une action sur la chanson — il mérite le bord, après les outils
+                de jeu. Rouge chez Apple Music, vert chez Spotify. */}
+            <a className="iconbtn" href={playLink(current)} target="_blank" rel="noopener noreferrer"
+              title={playTitle(current)}><PlayIcon service={player} /></a>
           </>
         ) : (
           <>
@@ -3799,9 +3981,13 @@ export default function Carnet() {
                     </span>
                   )}
                 </button>
-                {s.am && s.am.url && (
-                  <a className="cardam" href={s.am.url} target="_blank" rel="noopener noreferrer"
-                    title={`Écouter sur Apple Music — ${s.am.title}`}><AmIcon /></a>
+                {/* Même doctrine qu'Apple Music : l'icône n'apparaît que
+                    quand la chanson porte un lien mémorisé pour le service
+                    choisi — sinon la liste se couvrirait d'icônes inutiles
+                    (la barre du haut, elle, propose toujours le lien). */}
+                {linked(s) && (
+                  <a className="cardam" href={playLink(s)} target="_blank" rel="noopener noreferrer"
+                    title={playTitle(s)}><PlayIcon service={player} /></a>
                 )}
               </div>
               );
@@ -3971,6 +4157,11 @@ export default function Carnet() {
                   </div>
                 </div>
               )}
+              {/* Une seule ligne de service à la fois : celle du réglage global.
+                  Chez Apple, la recherche est automatique (index iTunes
+                  public) ; chez Spotify, l'appariement exact se colle une
+                  fois, faute d'API de recherche ouverte. */}
+              {!spotify && (
               <div className="mrow">
                 <span className="mlab">Apple Music</span>
                 <div className="amcell">
@@ -3978,7 +4169,7 @@ export default function Carnet() {
                   {current.am && current.am.url ? (
                     <>
                       <a className="btn slim" href={current.am.url} target="_blank" rel="noopener noreferrer"
-                        title={`${current.am.title} — ${current.am.artist}${current.am.album ? ` (${current.am.album})` : ""}`}><AmIcon /> Ouvrir</a>
+                        title={`${current.am.title} — ${current.am.artist}${current.am.album ? ` (${current.am.album})` : ""}`}><PlayIcon service="apple" /> Ouvrir</a>
                       <button className="btn slim ghost" disabled={!online || amBusyId === current.id}
                         title={online ? "Choisir une autre version parmi les meilleurs résultats" : "Hors ligne"}
                         onClick={() => amSearchOne(current, { pickAlways: true })}>
@@ -3998,11 +4189,36 @@ export default function Carnet() {
                     <button className="btn slim" disabled={!online || amBusyId === current.id}
                       title={online ? "Chercher cette chanson sur Apple Music" : "Hors ligne"}
                       onClick={() => amSearchOne(current)}>
-                      {amBusyId === current.id ? "Recherche…" : <><AmIcon /> Rechercher</>}
+                      {amBusyId === current.id ? "Recherche…" : <><PlayIcon service="apple" /> Rechercher</>}
                     </button>
                   )}
                 </div>
               </div>
+              )}
+              {spotify && (
+              <div className="mrow">
+                <span className="mlab">Spotify</span>
+                <div className="amcell">
+                  {current.sp && current.sp.url ? (
+                    <>
+                      <a className="btn slim" href={current.sp.url} target="_blank" rel="noopener noreferrer"
+                        title={`${current.sp.title || current.title}${current.sp.artist ? ` — ${current.sp.artist}` : ""}`}><PlayIcon service="spotify" /> Ouvrir</a>
+                      <button className="btn slim ghost" title="Coller un autre lien, ou retirer celui-ci"
+                        onClick={() => openSpPaste(current)}>Changer</button>
+                    </>
+                  ) : (
+                    <>
+                      <a className="btn slim" href={spLink(current)} target="_blank" rel="noopener noreferrer"
+                        title="Ouvrir Spotify sur une recherche pré-remplie"><PlayIcon service="spotify" /> Chercher</a>
+                      {/* Libellés courts : « Coller un lien » ferait passer la
+                          ligne sur deux étages à 375 px. */}
+                      <button className="btn slim ghost" title="Mémoriser la piste exacte : coller son lien copié depuis Spotify"
+                        onClick={() => openSpPaste(current)}>Coller</button>
+                    </>
+                  )}
+                </div>
+              </div>
+              )}
               <div className="mrow">
                 <span className="mlab">Durée</span>
                 <div className="amcell">
@@ -4236,11 +4452,47 @@ export default function Carnet() {
               </div>
             </div>
           )}
+          {spPaste && (
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Coller un lien Spotify"
+              onClick={(e) => { if (e.target === e.currentTarget) setSpPaste(null); }}>
+              <div className="modalbox">
+                <div className="modalicon"><PlayIcon service="spotify" /></div>
+                <h2>Lien Spotify</h2>
+                <p>
+                  Dans Spotify : ⋯ sur la chanson, <b>Partager</b> → <b>Copier le lien</b>.
+                  Le bouton de lecture ouvrira alors cette piste exacte, au lieu d'une recherche.
+                </p>
+                <div className="field" style={{ width: "100%" }}>
+                  <input value={spPaste.text} placeholder="https://open.spotify.com/track/…"
+                    autoCapitalize="off" autoCorrect="off" spellCheck={false} aria-label="Lien Spotify"
+                    onChange={(e) => { setSpErr(null); setSpPaste({ ...spPaste, text: e.target.value }); }} />
+                </div>
+                {spErr && <p className="amnone">{spErr}</p>}
+                <div className="actions" style={{ justifyContent: "center" }}>
+                  <button className="btn primary" disabled={spBusy || !spPaste.text.trim()} onClick={spSave}>
+                    {spBusy ? "Vérification…" : "Enregistrer"}
+                  </button>
+                  {navigator.clipboard && navigator.clipboard.readText && (
+                    <button className="btn ghost" disabled={spBusy} onClick={spPasteFromClipboard}
+                      title="Lire le presse-papiers">Coller</button>
+                  )}
+                </div>
+                <div className="actions" style={{ justifyContent: "center" }}>
+                  {current && current.sp && current.sp.url && (
+                    <button className="btn danger" disabled={spBusy}
+                      title="Revenir à la recherche pré-remplie"
+                      onClick={() => { setSp(spPaste.songId, null); setSpPaste(null); }}>Retirer le lien</button>
+                  )}
+                  <button className="btn" disabled={spBusy} onClick={() => setSpPaste(null)}>Annuler</button>
+                </div>
+              </div>
+            </div>
+          )}
           {amPick && (
             <div className="modal" role="dialog" aria-modal="true" aria-label="Choisir la piste Apple Music"
               onClick={(e) => { if (e.target === e.currentTarget) setAmPick(null); }}>
               <div className="modalbox">
-                <div className="modalicon"><AmIcon /></div>
+                <div className="modalicon"><PlayIcon service="apple" /></div>
                 <h2>Apple Music</h2>
                 <p>Plusieurs pistes ressemblent — laquelle est la bonne ?</p>
                 <div className="qdlist amlist">
@@ -4397,7 +4649,36 @@ export default function Carnet() {
               <button className="btn" onClick={createList}>Ajouter une liste</button>
             </div>
             <div className="field">
-              <label>Apple Music</label>
+              <label>Service de musique</label>
+              <p className="hint">
+                Où mènent les boutons de lecture — {spotify ? "vert" : "rouge"} partout dans
+                l'app : la barre de la chanson, les cartes de la liste, le menu de la chanson.
+                Réglage global, jamais chanson par chanson.
+              </p>
+            </div>
+            <div className="actions">
+              <div className="seg2 wide">
+                {/* Le triangle dans chaque touche montre la couleur qu'on choisit. */}
+                <button className={!spotify ? "on" : ""} aria-pressed={!spotify}
+                  onClick={() => setPlayer("apple")}><PlayIcon service="apple" /> Apple Music</button>
+                <button className={spotify ? "on" : ""} aria-pressed={spotify}
+                  onClick={() => setPlayer("spotify")}><PlayIcon service="spotify" /> Spotify</button>
+              </div>
+            </div>
+            {spotify && (
+              <div className="field">
+                <p className="hint">
+                  Spotify n'ouvre aucune recherche sans compte : le bouton vert ouvre donc
+                  l'app sur une recherche déjà remplie (titre + artiste), qui tombe sur la
+                  chanson. Pour figer la piste exacte, collez son lien une fois — <b>⋯ →
+                  Partager → Copier le lien</b> dans Spotify, puis « Coller » dans le menu de
+                  la chanson. Ces liens suivent le carnet dans la sauvegarde en fichier,
+                  comme ceux d'Apple Music.
+                </p>
+              </div>
+            )}
+            <div className="field">
+              <label>Liens Apple Music</label>
               <p className="hint">
                 Associe chaque chanson à sa piste Apple Music (recherche iTunes publique,
                 sans compte). Seules les correspondances sûres sont enregistrées ; les cas
