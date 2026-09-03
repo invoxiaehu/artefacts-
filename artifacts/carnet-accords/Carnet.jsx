@@ -4490,20 +4490,19 @@ export default function Carnet() {
                           : current.sp && current.sp.none ? "Réessayer"
                             : <><PlayIcon service="spotify" /> Rechercher</>}
                       </button>
-                      <button className="btn slim ghost" title="Mémoriser la piste exacte : coller son lien copié depuis Spotify"
-                        onClick={() => openSpPaste(current)}>Coller</button>
+                      <button className="btn slim ghost" title="Lier la piste à la main, quand la recherche se trompe"
+                        onClick={() => openSpPaste(current)}>À la main</button>
                     </>
                   ) : (
-                    <>
-                      {/* Sans identifiants : la recherche pré-remplie dans
-                          l'app, et le collage. Libellés courts — « Coller un
-                          lien » ferait passer la ligne sur deux étages à
-                          375 px. */}
-                      <a className="btn slim" href={spLink(current)} target="_blank" rel="noopener noreferrer"
-                        title="Ouvrir Spotify sur une recherche pré-remplie"><PlayIcon service="spotify" /> Chercher</a>
-                      <button className="btn slim ghost" title="Mémoriser la piste exacte : coller son lien copié depuis Spotify"
-                        onClick={() => openSpPaste(current)}>Coller</button>
-                    </>
+                    /* Sans identifiants, un seul bouton : la marche à suivre.
+                       Pas de « Chercher » ici — le triangle vert de la barre
+                       du haut lance déjà la même recherche d'un geste, et un
+                       raccourci qui double la barre volait la place de la
+                       seule chose que la ligne a à dire : comment lier la
+                       piste. Mis derrière « Coller », le mode d'emploi était
+                       invisible pour qui ne le connaissait pas déjà. */
+                    <button className="btn slim" title="La marche à suivre pour mémoriser la piste exacte"
+                      onClick={() => openSpPaste(current)}><PlayIcon service="spotify" /> Lier la piste</button>
                   )}
                 </div>
               </div>
