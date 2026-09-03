@@ -24,9 +24,12 @@ d'accueil, 375 px de large) : toute décision d'UI se juge d'abord là.
 Tout artefact du dépôt doit fonctionner hors ligne et s'installer sur
 l'écran d'accueil. Le modèle est `carnet-accords` :
 
-- `pwa.json` à côté du code (nom, couleurs, librairies vendor, polices) :
+- `pwa.json` à côté du code (nom, couleurs, librairies vendor, polices,
+  motif d'icône) :
   sa présence déclenche `buildPwa` dans `build.mjs` — copie des librairies
-  dans `dist/<slug>/vendor/`, icônes PNG dessinées au build,
+  dans `dist/<slug>/vendor/`, icônes PNG dessinées au build (motif choisi
+  par la clé `icon` — `"vu"` par défaut, `"verses"` pour un quatrain ;
+  les fonctions vivent dans `build/png.mjs`),
   `manifest.webmanifest` **volontairement sans `start_url`** (pour que
   « Sur l'écran d'accueil » embarque le fragment `#data=…`), et
   instanciation de `sw.template.js` (nom de cache dérivé du contenu :
@@ -371,3 +374,67 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 - Fin de session : popup de **score** (informatif, ajustement possible),
   une seule apparition par session (`memoPromptedRef`, réarmé par
   `startRevise`), seulement si `judged > 0`, jamais en quiz.
+
+## Carnet de poésie (`artifacts/carnet-poesie/`)
+
+Frère du carnet d'accords : tout `Poesie.jsx`, même architecture, même
+design system (variables sur `.cb`, thème clair `.cb.light`), mais
+`--amber` s'y appelle `--acc`. Modèle : `{ id, title, author, body,
+memo?, memoAuto?, source? }`, clé `poesie:v1`, préfixe localStorage
+`carnet-poesie:` — **impératif**, les deux apps partagent l'origine.
+Deux polices seulement : EB Garamond (vers et texte courant), Barlow
+Condensed (chrome et micro-capitales — pas de monospace ici).
+
+Le noyau est repris tel quel du carnet : révision, `emaStep`/`applyAuto`,
+tirages pondérés, quiz (« Réviser » au hasard), tags, listes et leur
+ordre, partage URL, backup, PWA. **Ne pas diverger sans raison** : une
+correction utile ici l'est probablement là-bas aussi.
+
+### Ce qui lui est propre
+
+- **Une unité de révision = un vers.** `parsePoem` rend un modèle plat
+  (`{type:"line"|"blank"}`), `notAVerse` écarte ce qui s'imprime sans se
+  réciter : ligne sans lettre, chiffre romain seul, ligne entièrement
+  entre parenthèses ou crochets, et **date de composition** (millésime +
+  cinq mots au plus — « Octobre 1870. », sans quoi un sonnet daté
+  compterait quinze vers). Ces lignes restent **affichées**, elles ne
+  sont ni masquées ni comptées.
+- ⚠️ Les deux règles du carnet qui testent « le bloc n'a pas d'accord »
+  (préambule, consigne finissant par « : ») sont **volontairement
+  absentes** : toujours vraies pour un poème, elles feraient disparaître
+  tout vers finissant par « : » et tout le début du poème.
+- Rendu en `pre-wrap` + `text-indent` négatif : l'indentation du poète
+  survit, et un alexandrin replié ne se confond pas avec le vers suivant.
+  **Ne jamais y remettre le `.replace(/\s+/g," ")` du carnet.**
+- Garde-fou à la lecture du stockage : un poème sans `id` en reçoit un.
+  Sans lui, deux poèmes sans `id` sont le même poème pour toute la
+  navigation (la révision au hasard tourne en rond).
+
+### Import Wikisource
+
+`fr.wikisource.org/w/api.php` avec `origin=*` répond
+`Access-Control-Allow-Origin: *` : appelable en `fetch()` depuis GitHub
+Pages, sans clé ni backend. **Gallica et Gutenberg n'envoient aucun
+en-tête CORS** — inutile d'y revenir.
+
+- Une seule règle : `action=parse&prop=text&redirects=1`, puis
+  **`DOMParser`** (jamais une regex : `class` n'est pas toujours le
+  premier attribut). Un `div.poem` → c'est un poème ; sinon ses liens
+  internes `ns0` sont le niveau suivant. Un recueil donne ses poèmes,
+  une page d'homonymie ses éditions.
+- Les `<br>` séparent les vers, mais le balisage porte **aussi** ses
+  propres retours à la ligne : les neutraliser avant de couper, sinon
+  chaque vers arrive précédé d'un blanc. L'indentation voulue arrive en
+  espaces insécables.
+- Un poème à cheval sur deux pages scannées donne **plusieurs**
+  `div.poem` — les concaténer (L'Albatros : 2 blocs, 16 vers).
+- L'auteur n'est pas sur la sous-page : il est en catégorie de la page
+  **racine** du chemin (`Poèmes de Charles Baudelaire`, `Recueils de
+  poèmes de Victor Hugo`), lue une fois par recueil et mise en cache.
+- `POET_CATS` : 42 catégories **vérifiées une à une contre l'API**.
+  Wikisource emploie l'apostrophe typographique — `Poèmes d'Arthur
+  Rimbaud` avec une apostrophe droite ne renvoie rien. Ne pas deviner
+  l'élision, vérifier avec `prop=categoryinfo`.
+- « Tout ajouter » : une requête toutes les 600 ms, arrêtable. Les 429
+  de Wikimedia arrivent vite ; un 429 interrompt la série au lieu
+  d'insister.
