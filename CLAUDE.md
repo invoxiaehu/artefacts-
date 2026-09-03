@@ -82,14 +82,18 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 ### Persistance — les invariants
 
 - `carnet:v4` : `{ songs, showChords, size, speed, sort, sortDir, barOpen,
-  instrument, theme, listFilter }`. Chanson : `{ id, title, artist, body,
+  instrument, theme, listFilter, player }`. Chanson : `{ id, title, artist, body,
   steps, memo?, memoAuto? }` (`memo` 0.1–5, **une décimale**, absent si 0 ;
   `memoAuto: true` = score écrit par le scoring automatique, effacé par un
   réglage manuel aux étoiles — qui passe par un `confirm` d'avertissement).
   Champs mémoïsés par recherche externe : `am` (piste Apple Music, ou
-  `{ none:true }`) et `lrc` (LRCLIB : `{ dur, lines? }`, ou `{ none:true }` ;
+  `{ none:true }`), `sp` (piste Spotify collée à la main : `{ id, url,
+  title, artist }`) et `lrc` (LRCLIB : `{ dur, lines? }`, ou `{ none:true }` ;
   `lines` = paroles horodatées `[[t, texte], …]`) — dans l'URL de partage,
-  `lrc` est réduit à sa durée (`encodeShare`), `am` n'y va pas du tout. Le
+  `lrc` est réduit à sa durée (`encodeShare`), `am` et `sp` n'y vont pas du
+  tout, et `player` non plus (c'est l'abonnement de celui qui joue, pas une
+  propriété du carnet). Renommer une chanson efface `am` et `sp` : la
+  nouvelle orthographe mérite sa chance. Le
   défilement ▶ : avec `lines`, ancrage ligne à ligne sur la grille
   (`lrcAnchors`, alignement DP monotone — un refrain non réécrit reste sans
   ancre et le défilement s'y attarde ; glissé pendant le défilement =
@@ -141,8 +145,8 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 
 - Barre du haut de la chanson : actions globales fréquentes en boutons
   icônes (▶/⏸ défilement, ⏭ suivante, 🎓 réviser, ♯ accords, 🎼 diagrammes),
-  puis Apple Music **en dernier** — c'est une sortie de l'app, pas une action
-  sur la chanson. État actif = fond ambre. Menu dépliant : uniquement le par-chanson
+  puis le service de musique **en dernier** — c'est une sortie de l'app, pas
+  une action sur la chanson. État actif = fond ambre. Menu dépliant : uniquement le par-chanson
   (tags, listes, note « Appris », tonalité, Modifier, Supprimer). Réglages
   rares dans ⚙. Contrôles contextuels flottants (pilule Vitesse visible
   seulement pendant le défilement).
@@ -166,6 +170,32 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   Safari. Le `maximum-scale=1` de `index.html` coupe déjà le zoom de page sur
   l'écran d'accueil. Pincement et glissé partagent le même effet et les mêmes
   écouteurs : un deuxième doigt annule le glissé en cours.
+
+### Services de musique (Apple Music / Spotify)
+
+- Réglage **global** `player` (`"apple" | "spotify"`), jamais chanson par
+  chanson : il décide où mènent tous les liens de lecture et la couleur du
+  triangle (`PlayIcon`, `--hot` chez Apple, `--spot` chez Spotify — vert de
+  marque en sombre, assombri en clair pour tenir sur du blanc). Un seul point
+  de passage au rendu : `playLink` / `playTitle` / `linked`.
+- Apple Music : recherche automatique (index iTunes public, voir plus haut).
+  Spotify **n'a pas d'équivalent** — son API de recherche réclame un jeton et
+  l'endpoint anonyme du lecteur web répond que son usage « n'est pas permis
+  par les conditions développeur » ; ne pas y retourner. Deux voies sans
+  compte ni clé :
+  1. `spLink` — lien de **recherche** pré-remplie (titre + artiste, l'artiste
+     emprunté à `am` quand la chanson n'en a pas). Construit hors ligne,
+     toujours disponible : sur iPhone il ouvre l'app Spotify sur la chanson.
+  2. Le lien de **piste** exact, collé une fois (⋯ → Partager → Copier le
+     lien), normalisé par `spIdFrom` (accepte `open.spotify.com/track/…`,
+     un préfixe `intl-xx`, l'URI `spotify:track:…`, l'id nu ; le `?si=` de
+     suivi est jeté) puis nommé et validé par l'**oEmbed public** de Spotify
+     — le seul point d'entrée officiel qui réponde sans jeton, CORS ouvert.
+     404 = piste inconnue, le lien est refusé ; service injoignable = le lien
+     est gardé quand même, seul son nom manque.
+- L'icône de carte dans la liste n'apparaît que pour un lien **mémorisé** du
+  service choisi (même doctrine qu'Apple Music) — la barre du haut, elle,
+  propose toujours un lien.
 
 ### Révision et tirages
 
