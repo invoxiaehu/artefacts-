@@ -199,8 +199,12 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
      et 250 ms entre deux chansons suffisent (contre 3,5 s chez Apple).
      Des identifiants refusés (400/401 au jeton) sont mémorisés dans
      `spBadAuth` : un scan s'arrête au lieu de marteler.
-  2. Le lien de **piste** exact, collé à la main (⋯ → Partager → Copier le
-     lien), normalisé par `spIdFrom` (accepte `open.spotify.com/track/…`,
+  2. Le lien de **piste** exact, collé à la main. Le bouton « Coller » du menu
+     ouvre une fenêtre qui porte toute la marche à suivre en cinq étapes
+     numérotées — app requise, recherche, repérage, ⋯ → Partager → Copier le
+     lien, retour et collage — avec le **lien de recherche dans la fenêtre**
+     elle-même : l'aller-retour se fait d'un seul endroit et le champ attend
+     déjà au retour. Le lien collé est normalisé par `spIdFrom` (accepte `open.spotify.com/track/…`,
      un préfixe `intl-xx`, l'URI `spotify:track:…`, l'id nu ; le `?si=` de
      suivi est jeté) puis nommé et validé par l'**oEmbed public** de Spotify
      — sans jeton, CORS ouvert. 404 = piste inconnue, le lien est refusé ;

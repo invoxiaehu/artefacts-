@@ -2098,6 +2098,16 @@ a.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px
 .amcell { display:flex; gap:8px; align-items:center; justify-content:flex-end; flex-wrap:wrap; }
 .amnone { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
 .durval { font-family:'JetBrains Mono'; font-size:12px; color:var(--ink); white-space:nowrap; }
+/* Marche à suivre du lien Spotify : numérotée et alignée à gauche dans une
+   modal par ailleurs centrée — une liste d'étapes se lit au fil du bord
+   gauche, pas au milieu. En <ol> pour que les numéros soient dans le
+   document et pas dessinés à la main. */
+.spsteps { width:100%; margin:0; padding:0 0 0 21px; text-align:left;
+  font-size:13px; color:var(--muted); line-height:1.5; }
+.spsteps li { margin-bottom:7px; padding-left:2px; }
+.spsteps li:last-child { margin-bottom:0; }
+.spsteps li::marker { font-family:'JetBrains Mono'; font-size:11px; color:var(--amber); }
+.spsteps b { color:var(--ink); font-weight:600; }
 .amlist { width:100%; }
 .amchoice { width:100%; text-align:left; border-radius:8px; }
 .amchoice:hover { background:var(--acc-soft); }
@@ -3779,6 +3789,9 @@ export default function Carnet() {
     if (!sp) { const { sp: dropped, ...rest } = s; return rest; }
     return { ...s, sp };
   }));
+  /* La chanson que vise la fenêtre de collage — par son id, pas « current » :
+     la fenêtre survit à un changement de chanson. */
+  const spPasteSong = spPaste ? (songs.find((s) => s.id === spPaste.songId) || current) : null;
   const openSpPaste = (song) => {
     setSpErr(null);
     setSpPaste({ songId: song.id, text: song.sp && song.sp.url ? song.sp.url : "" });
@@ -4747,7 +4760,7 @@ export default function Carnet() {
                   ))}
                 </div>
                 <div className="actions" style={{ justifyContent: "center" }}>
-                  {current && current.sp && current.sp.url ? (
+                  {songs.some((s) => s.id === spPick.songId && s.sp && s.sp.url) ? (
                     <button className="btn ghost" title="Aucune de ces pistes : oublier le lien actuel"
                       onClick={() => { setSp(spPick.songId, null); setSpPick(null); }}>Retirer le lien</button>
                   ) : (
@@ -4760,15 +4773,30 @@ export default function Carnet() {
             </div>
           )}
           {spPaste && (
-            <div className="modal" role="dialog" aria-modal="true" aria-label="Coller un lien Spotify"
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Lier la piste Spotify"
               onClick={(e) => { if (e.target === e.currentTarget) setSpPaste(null); }}>
               <div className="modalbox">
                 <div className="modalicon"><PlayIcon service="spotify" /></div>
-                <h2>Lien Spotify</h2>
-                <p>
-                  Dans Spotify : ⋯ sur la chanson, <b>Partager</b> → <b>Copier le lien</b>.
-                  Le bouton de lecture ouvrira alors cette piste exacte, au lieu d'une recherche.
-                </p>
+                {/* Titre court : « Lier la piste Spotify » passait sur deux
+                    lignes, et le triangle vert dit déjà le service. */}
+                <h2>Lier la piste</h2>
+                <p>Un aller-retour dans Spotify, une fois par chanson — après quoi le bouton
+                  vert ouvre la piste elle-même.</p>
+                {/* La recherche est DANS la fenêtre : l'aller-retour se fait
+                    d'un seul endroit, et au retour le champ attend déjà. */}
+                <ol className="spsteps">
+                  <li>L'app <b>Spotify</b> doit être installée : sans elle, le lien s'ouvre
+                    dans le navigateur, qui perd la recherche en route.</li>
+                  <li>Touchez <b>Ouvrir la recherche</b> ci-dessous — Spotify s'ouvre
+                    sur « {spPasteSong.title}{spPasteSong.artist ? ` — ${spPasteSong.artist}` : ""} ».</li>
+                  <li>Repérez la bonne chanson dans les résultats.</li>
+                  <li>Sur cette chanson : <b>⋯</b> → <b>Partager</b> → <b>Copier le lien</b>.</li>
+                  <li>Revenez ici, collez le lien dans le champ, <b>Enregistrer</b>.</li>
+                </ol>
+                <div className="actions" style={{ justifyContent: "center" }}>
+                  <a className="btn slim" href={spLink(spPasteSong)} target="_blank" rel="noopener noreferrer"
+                    title="Ouvrir Spotify sur cette chanson"><PlayIcon service="spotify" /> Ouvrir la recherche</a>
+                </div>
                 <div className="field" style={{ width: "100%" }}>
                   <input value={spPaste.text} placeholder="https://open.spotify.com/track/…"
                     autoCapitalize="off" autoCorrect="off" spellCheck={false} aria-label="Lien Spotify"
@@ -4785,7 +4813,7 @@ export default function Carnet() {
                   )}
                 </div>
                 <div className="actions" style={{ justifyContent: "center" }}>
-                  {current && current.sp && current.sp.url && (
+                  {spPasteSong && spPasteSong.sp && spPasteSong.sp.url && (
                     <button className="btn danger" disabled={spBusy}
                       title="Revenir à la recherche pré-remplie"
                       onClick={() => { setSp(spPaste.songId, null); setSpPaste(null); }}>Retirer le lien</button>
