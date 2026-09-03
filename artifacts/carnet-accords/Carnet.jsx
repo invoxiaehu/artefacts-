@@ -1267,6 +1267,16 @@ const amLink = (s) => (s.am && s.am.url)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Clé de regroupement d'un artiste : casse et espaces ignorés. Assez pour
+ *  réunir « THE BEATLES » et « The Beatles » sans prétendre dédoublonner
+ *  « Beatles » et « The Beatles » — ça, c'est à l'utilisateur de le corriger
+ *  dans le titre de ses chansons. */
+const artistKey = (name) => String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+/** Les filtres d'artiste partagent le réglage listFilter avec les listes
+ *  manuelles : un id de liste (uid, alphanumérique) ne peut pas contenir le
+ *  deux-points, donc aucune collision possible. */
+const ARTIST_PREFIX = "artist:";
+
 /* ------------------------------------------------------------------ */
 /* Spotify — l'autre service, choisi par le réglage global (player).   */
 /*                                                                     */
@@ -1913,6 +1923,13 @@ const CSS = `
 .barwrap.folded { grid-template-rows:0fr; opacity:0; }
 .barwrap > * { overflow:hidden; min-height:0; }
 .artist { font-size:12.5px; color:var(--muted); margin:3px 0 0; letter-spacing:.04em; }
+/* Artiste tapable : exactement l'allure du texte qu'il remplace, plus un
+   soulignement pointillé — assez pour dire « ça se touche », pas assez pour
+   faire un bouton de plus dans une barre déjà chargée. Le reset .cb button
+   ramène la police du bouton à celle du paragraphe. */
+.artistlink { display:block; text-align:left; padding:0; font-family:inherit;
+  text-decoration:underline dotted var(--line); text-underline-offset:3px; }
+.artistlink:hover { color:var(--ink); text-decoration-color:var(--amber-dim); }
 /* Menu de la chanson : des rangées label à gauche / contrôle à droite,
    toutes alignées sur la même grille — pas de flex-wrap qui zigzague. */
 .menu { display:flex; flex-direction:column; gap:9px; margin-top:12px; }
@@ -3406,12 +3423,54 @@ export default function Carnet() {
   }, [reviseMode, view, revealables, reviseStart, revealed, judged, currentId, quiz]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Une liste supprimée laisse parfois son id en filtre persisté : on l'ignore.
+  /* Artistes du carnet, regroupés sans tenir compte de la casse ni des
+     espaces (un PDF donne « THE BEATLES », un autre « The Beatles » — c'est
+     le même bonhomme) et rendus dans l'orthographe la plus fréquente. Triés
+     par nombre de chansons décroissant : les artistes dont on a le plus
+     arrivent en tête de molette, là où le pouce tombe. */
+  const artists = useMemo(() => {
+    const byKey = new Map();
+    for (const s of songs) {
+      const name = String(s.artist || "").trim();
+      if (!name) continue; // « Artiste inconnu » n'est pas un artiste
+      const key = artistKey(name);
+      const hit = byKey.get(key);
+      if (hit) {
+        hit.count++;
+        hit.spellings[name] = (hit.spellings[name] || 0) + 1;
+      } else byKey.set(key, { key, count: 1, spellings: { [name]: 1 } });
+    }
+    return [...byKey.values()]
+      .map((a) => ({
+        key: a.key, count: a.count,
+        // Orthographe majoritaire, à égalité la première rencontrée.
+        name: Object.keys(a.spellings).reduce((best, n) => (a.spellings[n] > a.spellings[best] ? n : best)),
+      }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "fr"));
+  }, [songs]);
+  /* Filtre actif : une liste manuelle, ou un artiste. Les deux vivent dans le
+     même réglage persisté (listFilter), les artistes préfixés — un id de liste
+     ne contient jamais de deux-points. Tout est revalidé contre les données à
+     chaque rendu : une liste supprimée, un artiste renommé ou disparu du
+     carnet retombent sur « Toutes les chansons » au lieu d'afficher le vide.
+     La valeur rendue au <select> est celle de l'option qui existe, donc
+     l'orthographe canonique — sinon la molette s'afficherait vide. */
   const activeList = listFilter && lists.defs.some((d) => d.id === listFilter) ? listFilter : "";
+  const activeArtist = useMemo(() => {
+    if (!listFilter.startsWith(ARTIST_PREFIX)) return "";
+    const hit = artists.find((a) => a.key === artistKey(listFilter.slice(ARTIST_PREFIX.length)));
+    return hit ? hit.name : "";
+  }, [listFilter, artists]);
+  const activeFilter = activeArtist ? ARTIST_PREFIX + activeArtist : activeList;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     let list = q ? songs.filter((s) => (s.title + " " + s.artist).toLowerCase().includes(q)) : songs;
     if (activeList) list = list.filter((s) => (lists.byKey[songKey(s)] || []).includes(activeList));
+    if (activeArtist) {
+      const key = artistKey(activeArtist);
+      list = list.filter((s) => artistKey(s.artist || "") === key);
+    }
     // Filtres cumulés : « Piano » et « Favorite » donnent les favorites au piano.
     if (tagFilter.length) {
       list = list.filter((s) => {
@@ -3429,7 +3488,7 @@ export default function Carnet() {
     const key = sort === "artist" ? (s) => (s.artist || "").trim() : (s) => s.title;
     return [...list].sort((a, b) =>
       dir * (key(a).localeCompare(key(b), "fr") || a.title.localeCompare(b.title, "fr")));
-  }, [songs, query, sort, sortDir, tagFilter, tags, activeList, lists]);
+  }, [songs, query, sort, sortDir, tagFilter, tags, activeList, activeArtist, lists]);
 
   const importFiles = async (files) => {
     if (!files || !files.length) return;
@@ -4118,18 +4177,33 @@ export default function Carnet() {
             </div>
             {songs.length > 0 && (
                 <div className="filterrow">
-                  <select className="listsel" value={activeList} aria-label="Liste affichée"
+                  {/* Deux zones, en <optgroup> : les listes qu'on constitue à
+                      la main, puis les artistes du carnet — des recherches
+                      enregistrées, tirées des données. iOS met les intitulés de
+                      groupe en gras, rien à dessiner. « Nouvelle liste » vit
+                      DANS le groupe des listes : après quarante artistes, elle
+                      serait introuvable. */}
+                  <select className="listsel" value={activeFilter} aria-label="Liste affichée"
                     onChange={(e) => {
                       if (e.target.value === "__new__") createList();
                       else setListFilter(e.target.value);
                     }}>
                     <option value="">Toutes les chansons</option>
-                    {lists.defs.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.name} ({songs.filter((s) => inList(s, d.id)).length})
-                      </option>
-                    ))}
-                    <option value="__new__">＋ Nouvelle liste…</option>
+                    <optgroup label="Listes">
+                      {lists.defs.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name} ({songs.filter((s) => inList(s, d.id)).length})
+                        </option>
+                      ))}
+                      <option value="__new__">＋ Nouvelle liste…</option>
+                    </optgroup>
+                    {artists.length > 0 && (
+                      <optgroup label="Artistes">
+                        {artists.map((a) => (
+                          <option key={a.key} value={ARTIST_PREFIX + a.name}>{a.name} ({a.count})</option>
+                        ))}
+                      </optgroup>
+                    )}
                   </select>
                   {tags.defs.length > 0 && (
                     <div className="tagdd">
@@ -4381,7 +4455,21 @@ export default function Carnet() {
               title={barOpen ? "Replier les réglages de la chanson" : "Déplier les réglages de la chanson"}
               onClick={() => setBarOpen(!barOpen)}><i>▲</i></button>
             <h1 className="title">{current.title}</h1>
-            <p className="artist">{current.artist || "Artiste inconnu"}</p>
+            {/* Nom d'artiste tapable : il bascule la liste sur cet artiste et
+                revient à la bibliothèque — l'idiome iOS. La recherche en cours
+                est effacée au passage, sinon les deux filtres se cumuleraient
+                et pourraient ne rien laisser. */}
+            {current.artist ? (
+              <button className="artist artistlink"
+                title={`Voir tout ce que le carnet a de ${current.artist}`}
+                onClick={() => {
+                  setQuery("");
+                  setListFilter(ARTIST_PREFIX + current.artist);
+                  leaveSong();
+                }}>{current.artist}</button>
+            ) : (
+              <p className="artist">Artiste inconnu</p>
+            )}
             <div className={"barwrap" + (barOpen ? "" : " folded")}>
             <div className="menu">
               {tags.defs.length > 0 && (
