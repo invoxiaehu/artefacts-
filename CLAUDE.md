@@ -104,6 +104,22 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 - Les **ids de chansons sont régénérés à chaque import** : tags (`tags:v1`)
   et listes (`lists:v1`) sont ancrés par `songKey` (titre|artiste
   normalisés) et suivent un renommage via `moveTags`/`moveLists`.
+- Le menu déroulant de la bibliothèque tient **deux zones** (`<optgroup>`) :
+  les listes manuelles — avec « ＋ Nouvelle liste… » **dedans**, sinon elle
+  serait introuvable sous quarante artistes — puis les **artistes du carnet**,
+  des recherches enregistrées calculées à chaque rendu (`artists`), tous
+  présents, triés par nombre de chansons décroissant. Les deux partagent le
+  réglage `listFilter` : un artiste s'y écrit `artist:<nom>` (un id de liste,
+  alphanumérique, ne peut pas contenir de deux-points). `artistKey` regroupe
+  sans la casse ni les espaces (« THE BEATLES » = « The Beatles ») et
+  l'orthographe majoritaire est celle affichée ; `activeArtist` revalide
+  contre les données à chaque rendu — artiste renommé ou disparu, on retombe
+  sur « Toutes les chansons », et la valeur donnée au `<select>` est toujours
+  celle d'une option existante. Le nom d'artiste sous le titre d'une chanson
+  est **tapable** (`.artistlink`) : il bascule le filtre et revient à la
+  liste, en effaçant la recherche en cours (sans quoi les deux filtres se
+  cumuleraient jusqu'au vide). Une chanson sans artiste ne donne ni entrée de
+  menu ni lien.
 - `normalizeLibrary` est le seul point de passage des imports (URL,
   fichier, collage) : **tout nouveau champ de chanson doit y être
   préservé**, sinon il est silencieusement perdu au premier transfert.
