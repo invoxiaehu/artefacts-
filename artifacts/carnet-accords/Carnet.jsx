@@ -1832,7 +1832,7 @@ const CSS = `
 .libscroll .top { flex:0 0 auto; }
 .libhead { position:sticky; top:0; z-index:10; background:var(--bg);
   padding:12px 16px 10px; border-bottom:1px solid var(--line); }
-.lib { padding:12px 16px calc(150px + var(--sab)); }
+.lib { padding:12px 16px calc(150px + var(--sab)); position:relative; }
 .search { width:100%; padding:11px 44px 11px 13px; border-radius:10px; border:1px solid var(--line);
   background:var(--panel); color:var(--ink); font-size:16px; }
 .search::placeholder { color:var(--muted); }
@@ -1931,8 +1931,15 @@ const CSS = `
 .cardgrip:active { cursor:grabbing; color:var(--amber); }
 .card.reordering { border-left-color:var(--amber-dim); }
 .card.reordering .cardmain { opacity:.75; }
-.card.dragging { border-color:var(--amber); border-left-color:var(--amber);
-  background:var(--panel2); box-shadow:0 6px 18px rgba(0,0,0,.35); }
+/* La carte portée reste dans le flux : son emplacement garde donc sa hauteur
+   et c'est lui qu'on voit comme le trou. Elle s'en échappe par une
+   transformée, écrite image par image en JS — d'où l'absence de transition
+   ici, qui la ferait traîner derrière le doigt. position:relative + z-index
+   pour qu'elle passe AU-DESSUS des voisines pendant le voyage. */
+.card.lifted { position:relative; z-index:5; will-change:transform;
+  border-color:var(--amber); border-left-color:var(--amber);
+  background:var(--panel2); box-shadow:0 10px 26px rgba(0,0,0,.45); }
+.cb.light .card.lifted { box-shadow:0 10px 26px rgba(0,0,0,.22); }
 .carddel:hover { color:var(--hot); background:rgba(200,80,60,.08); }
 .seg2 { display:flex; border:1px solid var(--line); border-radius:8px; background:var(--panel2); overflow:hidden; }
 .seg2 button { padding:8px 13px; font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
@@ -2893,9 +2900,13 @@ export default function Carnet() {
   const [reorder, setReorder] = useState(false);
   const [dragRows, setDragRows] = useState(null);
   const [dragId, setDragId] = useState(null);
-  const dragRef = useRef(null); // { pointerId, y } pendant le glissé
+  const dragRef = useRef(null); // { pointerId, id, y, grab } pendant le glissé
+  const rowsRef = useRef(null); // même contenu que dragRows, mis à jour de façon SYNCHRONE
+  const flipRef = useRef(null); // positions d'avant permutation, pour l'animation des voisines
   const libScrollRef = useRef(null);
-  const autoRef = useRef(0); // boucle d'auto-défilement (requestAnimationFrame)
+  const libRef = useRef(null); // le conteneur des cartes : repère des offsetTop
+  const dragOff = useRef(null); // détache les écouteurs de fenêtre du glissé
+  const autoRef = useRef(0); // boucle du glissé (requestAnimationFrame)
   const [libScrolled, setLibScrolled] = useState(false); // scroll en cours dans la bibliothèque — la palette flottante s'efface
   const libScrollTimer = useRef(0);
 
@@ -4189,21 +4200,52 @@ export default function Carnet() {
   }, []);
 
   /* ---------------------------------------------------------------- */
-  /* Réorganisation d'une liste manuelle. Pointer Events plutôt que      */
-  /* touch : un seul chemin de code pour le doigt et la souris, et       */
-  /* setPointerCapture garde le geste même quand le doigt sort de la     */
-  /* poignée. La carte au doigt n'est pas déplacée par une transformée : */
-  /* c'est la LISTE qui se réordonne en direct sous elle. Moins de       */
-  /* calcul, aucune dérive possible entre le doigt et le rendu.          */
+  /* Réorganisation d'une liste manuelle — un vrai glissé.               */
+  /*                                                                     */
+  /* Pointer Events : un seul chemin de code pour le doigt et la souris,  */
+  /* et setPointerCapture garde le geste quand le doigt sort de la        */
+  /* poignée.                                                            */
+  /*                                                                     */
+  /* La carte portée reste DANS le flux et s'échappe par une transformée : */
+  /* son emplacement continue donc de réserver sa hauteur, et c'est lui   */
+  /* qu'on voit comme le trou. Aucun clone, aucun élément sorti du flux — */
+  /* donc pas de largeur à épingler, et pas de position:fixed dans un     */
+  /* conteneur qui défile (capricieux sur Safari).                        */
+  /*                                                                     */
+  /* La dérive, seul vrai piège de ce genre de code, est écartée par      */
+  /* construction : la transformée n'est jamais ACCUMULÉE, elle est       */
+  /* recalculée à chaque frame comme « où le doigt veut la carte » moins  */
+  /* « où son emplacement se trouve maintenant ». Une permutation ou un   */
+  /* défilement changent le second terme : le calcul se corrige tout seul */
+  /* à la frame suivante.                                                 */
   /* ---------------------------------------------------------------- */
   const startReorder = () => {
     if (!activeList) return;
-    setDragRows(listSongs.map((x) => x.id));
+    const ids = listSongs.map((x) => x.id);
+    rowsRef.current = ids;
+    setDragRows(ids);
     setReorder(true);
   };
-  const endReorder = () => { setReorder(false); setDragRows(null); setDragId(null); };
-  // Quitter la liste (ou l'app) referme le mode : un ordre à moitié rangé
-  // n'est pas perdu pour autant, chaque lâcher a déjà été enregistré.
+  /* Les styles en vol sont écrits directement dans le DOM (c'est le prix de
+     l'animation image par image) : il faut donc les balayer soi-même en
+     sortant. Sans ça, quitter le mode pendant qu'une voisine glisse encore
+     annule la remise à zéro et la carte reste décalée pour de bon. */
+  const clearCardStyles = () => {
+    const lib = libRef.current;
+    if (!lib) return;
+    for (const c of cardsOf(lib)) { c.style.transition = ""; c.style.transform = ""; }
+  };
+  const endReorder = () => {
+    if (dragOff.current) dragOff.current();
+    dragRef.current = null;
+    stopDragScroll();
+    flipRef.current = null;
+    clearCardStyles();
+    setReorder(false); setDragRows(null); setDragId(null);
+    rowsRef.current = null;
+  };
+  // Quitter la liste referme le mode : rien n'est perdu, chaque lâcher a
+  // déjà été enregistré.
   useEffect(() => { if (reorder && !activeList) endReorder(); }, [reorder, activeList]);
 
   /* Enregistré à chaque lâcher, pas sur un bouton « Valider » : c'est
@@ -4218,62 +4260,156 @@ export default function Carnet() {
     setSort("list");
   };
 
-  const stopDragScroll = () => { if (autoRef.current) { cancelAnimationFrame(autoRef.current); autoRef.current = 0; } };
-  /* Le doigt qui s'immobilise près d'un bord doit continuer à faire défiler :
-     sans boucle propre, plus aucun pointermove n'arrive et la liste se fige. */
-  const dragScroll = () => {
+  const stopDragScroll = () => {
+    if (autoRef.current) { cancelAnimationFrame(autoRef.current); autoRef.current = 0; }
+  };
+  /** Position d'un point de l'écran dans le repère du contenu de la liste.
+   *  Le rect de .lib suit le défilement, donc ce repère est celui des
+   *  offsetTop des cartes — à une constante près (le padding), absorbée une
+   *  fois pour toutes par « grab » au moment de la saisie. */
+  const contentY = (clientY) => {
+    const lib = libRef.current;
+    return lib ? clientY - lib.getBoundingClientRect().top : 0;
+  };
+  const cardsOf = (lib) => [...lib.querySelectorAll(".card")];
+
+  /* Une seule boucle pendant tout le glissé : elle fait défiler près des
+     bords, replace la carte portée, et décide de l'emplacement d'insertion.
+     Tout y est lu dans des refs — une frame ne peut donc pas travailler sur
+     un état périmé. */
+  const dragFrame = () => {
     autoRef.current = 0;
-    const box = libScrollRef.current, d = dragRef.current;
-    if (!box || !d) return;
-    const r = box.getBoundingClientRect();
-    const EDGE = 72;
-    const up = d.y - r.top, down = r.bottom - d.y;
-    let step = 0;
-    if (up < EDGE) step = -Math.ceil((EDGE - up) / 6);
-    else if (down < EDGE) step = Math.ceil((EDGE - down) / 6);
-    if (step) box.scrollTop += step;
-    autoRef.current = requestAnimationFrame(dragScroll);
+    const d = dragRef.current, box = libScrollRef.current, lib = libRef.current;
+    if (!d || !box || !lib) return;
+    // 1) auto-défilement : sans lui, un doigt immobile près d'un bord ne
+    //    reçoit plus aucun pointermove et la liste se figerait.
+    const r = box.getBoundingClientRect(), EDGE = 72;
+    const haut = d.y - r.top, bas = r.bottom - d.y;
+    if (haut < EDGE) box.scrollTop -= Math.ceil((EDGE - haut) / 6);
+    else if (bas < EDGE) box.scrollTop += Math.ceil((EDGE - bas) / 6);
+    // 2) la carte portée rejoint le doigt
+    const cards = cardsOf(lib);
+    const el = cards.find((c) => c.dataset.song === d.id);
+    if (el) {
+      const voulu = contentY(d.y) - d.grab;
+      el.style.transform = `translateY(${Math.round(voulu - el.offsetTop)}px) scale(1.02)`;
+      // 3) emplacement d'insertion, d'après le CENTRE de la carte portée
+      //    plutôt que le point de saisie : c'est le corps de la carte qui
+      //    décide, pas l'endroit exact où le doigt l'a prise.
+      const centre = voulu + el.offsetHeight / 2;
+      let cible = 0;
+      for (const c of cards) {
+        if (c.dataset.song === d.id) continue;
+        if (c.offsetTop + c.offsetHeight / 2 < centre) cible++;
+      }
+      const rows = rowsRef.current || [];
+      const depuis = rows.indexOf(d.id);
+      if (depuis >= 0 && cible !== depuis) {
+        // Positions d'avant, pour que les voisines glissent (FLIP) au lieu de
+        // sauter d'un coup à leur nouvelle place.
+        flipRef.current = new Map(cards.map((c) => [c.dataset.song, c.offsetTop]));
+        const next = [...rows];
+        next.splice(cible, 0, next.splice(depuis, 1)[0]);
+        rowsRef.current = next; // synchrone : la frame suivante ne doit pas rejouer le même déplacement
+        setDragRows(next);
+      }
+    }
+    autoRef.current = requestAnimationFrame(dragFrame);
   };
 
+  /* FLIP : les voisines sont replacées à leur ancienne position sans
+     transition, puis relâchées à la frame suivante avec une transition —
+     elles glissent donc de l'ancien emplacement au nouveau. La carte portée
+     est exclue : c'est la boucle qui la pilote. */
+  useLayoutEffect(() => {
+    const lib = libRef.current, avant = flipRef.current;
+    if (!lib || !avant) return;
+    flipRef.current = null;
+    const d = dragRef.current;
+    const bougees = [];
+    for (const c of cardsOf(lib)) {
+      const id = c.dataset.song;
+      if (!id || (d && id === d.id)) continue;
+      const y0 = avant.get(id);
+      if (y0 == null) continue;
+      const delta = y0 - c.offsetTop;
+      if (!delta) continue;
+      c.style.transition = "none";
+      c.style.transform = `translateY(${delta}px)`;
+      bougees.push(c);
+    }
+    if (!bougees.length) return;
+    const id = requestAnimationFrame(() => {
+      for (const c of bougees) { c.style.transition = "transform .16s ease"; c.style.transform = ""; }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [dragRows]);
+
+  /* Le pointermove ne fait que noter la position : tout le travail est dans
+     la boucle, qui tourne de toute façon pour l'auto-défilement. Un doigt
+     rapide ne peut donc pas provoquer deux recalculs dans la même frame.
+
+     Les écouteurs sont posés sur la FENÊTRE, et pas sur la poignée. Mesuré :
+     réordonner la liste déplace la poignée dans le DOM, et la capture de
+     pointeur ne survit pas toujours à ce déplacement — les pointermove
+     cessaient alors d'arriver, la position notée se figeait, et la carte
+     décrochait du doigt de plusieurs dizaines de pixels dès qu'on revenait
+     en arrière. La fenêtre, elle, ne bouge pas. setPointerCapture est gardé
+     malgré tout : au doigt, il évite que le geste soit volé par le
+     défilement. */
   const onGripDown = (e, id) => {
-    if (!dragRows) return;
+    if (!rowsRef.current) return;
     e.preventDefault();
+    const el = e.currentTarget.closest(".card");
+    if (!el) return;
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* souris sans capture */ }
-    dragRef.current = { pointerId: e.pointerId, y: e.clientY };
+    // grab : où le doigt a pris la carte. Constant pour tout le glissé, il
+    // absorbe au passage l'écart de repère entre le rect de .lib et offsetTop.
+    const d = { pointerId: e.pointerId, id, y: e.clientY, grab: contentY(e.clientY) - el.offsetTop };
+    dragRef.current = d;
+    const move = (ev) => {
+      if (ev.pointerId !== d.pointerId) return;
+      ev.preventDefault();
+      d.y = ev.clientY;
+    };
+    const up = (ev) => { if (ev.pointerId === d.pointerId) dropCard(); };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    dragOff.current = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      dragOff.current = null;
+    };
     setDragId(id);
     stopDragScroll();
-    autoRef.current = requestAnimationFrame(dragScroll);
+    autoRef.current = requestAnimationFrame(dragFrame);
   };
-  const onGripMove = (e) => {
+
+  const dropCard = () => {
     const d = dragRef.current;
-    if (!d || !dragId || e.pointerId !== d.pointerId) return;
-    e.preventDefault();
-    d.y = e.clientY;
-    const box = libScrollRef.current;
-    if (!box) return;
-    const cards = [...box.querySelectorAll(".card")];
-    // La carte survolée, par sa boîte : dans l'espace entre deux cartes on ne
-    // bouge rien plutôt que d'inventer une cible.
-    const over = cards.findIndex((c) => {
-      const r = c.getBoundingClientRect();
-      return d.y >= r.top && d.y <= r.bottom;
-    });
-    if (over < 0) return;
-    const from = dragRows.indexOf(dragId);
-    if (from < 0 || over === from) return;
-    const next = [...dragRows];
-    next.splice(over, 0, next.splice(from, 1)[0]);
-    setDragRows(next);
-  };
-  const onGripUp = (e) => {
-    const d = dragRef.current;
-    if (!d || (e && e.pointerId !== d.pointerId)) return;
+    if (!d) return;
+    const lib = libRef.current;
     dragRef.current = null;
+    if (dragOff.current) dragOff.current();
     stopDragScroll();
+    // La carte se pose : sa place est déjà la bonne (l'ordre a suivi le
+    // glissé), la transition la ramène dedans au lieu de la faire claquer.
+    if (lib) {
+      for (const c of cardsOf(lib)) {
+        if (c.dataset.song === d.id) {
+          c.style.transition = "transform .18s ease";
+          c.style.transform = "";
+          setTimeout(() => { c.style.transition = ""; }, 240);
+        } else { c.style.transition = ""; c.style.transform = ""; }
+      }
+    }
     setDragId(null);
-    if (dragRows) commitOrder(dragRows);
+    if (rowsRef.current) commitOrder(rowsRef.current);
   };
-  useEffect(() => stopDragScroll, []);
+  // Démontage en pleine manœuvre : ni boucle ni écouteurs orphelins.
+  useEffect(() => () => { stopDragScroll(); if (dragOff.current) dragOff.current(); }, []);
 
   // Palette flottante : effacée pendant le scroll de la liste, revenue
   // ~250 ms après le dernier mouvement.
@@ -4483,7 +4619,7 @@ export default function Carnet() {
               </div>
             )}
           </div>
-          <div className="lib">
+          <div className="lib" ref={libRef}>
             {status && (
               <div className="notice">
                 <button className="noticeclose" title="Fermer" aria-label="Fermer le message"
@@ -4528,8 +4664,8 @@ export default function Carnet() {
             )}
             {reorder && (
               <div className="reorderbar">
-                <span>Glissez les poignées <i>⠿</i> pour ranger la liste
-                  entière — recherche et tags mis de côté.</span>
+                <span>Glissez les poignées <i>⠿</i> pour ranger la liste entière —
+                  recherche et tags mis de côté.</span>
                 <button className="btn slim primary" onClick={endReorder}>Terminé</button>
               </div>
             )}
@@ -4538,15 +4674,13 @@ export default function Carnet() {
               : filtered).map((s) => {
               const marks = tagsOf(s);
               return (
-              <div className={"card" + (reorder ? " reordering" : "") + (dragId === s.id ? " dragging" : "")} key={s.id}>
+              <div className={"card" + (reorder ? " reordering" : "") + (dragId === s.id ? " lifted" : "")}
+                key={s.id} data-song={s.id}>
                 {reorder && (
                   /* Poignée : touch-action none, sinon le glissé part en
                      défilement de page avant d'arriver jusqu'ici. */
                   <button className="cardgrip" aria-label={`Déplacer ${s.title}`}
-                    onPointerDown={(e) => onGripDown(e, s.id)}
-                    onPointerMove={onGripMove}
-                    onPointerUp={onGripUp}
-                    onPointerCancel={onGripUp}><i>⠿</i></button>
+                    onPointerDown={(e) => onGripDown(e, s.id)}><i>⠿</i></button>
                 )}
                 <button className="cardmain" disabled={reorder} onClick={() => openFromList(s.id)}>
                   <div style={{ flex: 1, minWidth: 0 }}>
