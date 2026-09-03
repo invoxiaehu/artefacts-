@@ -108,9 +108,10 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   fichier, collage) : **tout nouveau champ de chanson doit y être
   préservé**, sinon il est silencieusement perdu au premier transfert.
 - URL de partage (`#v=1&data=…`) : songs + réglages, **sans** tags ni
-  listes. Sauvegarde fichier : `backupJson { songs, tags, lists }` — sa
-  signature pilote le point ambre « dirty » ; en changer le format change
-  la signature.
+  listes. Sauvegarde fichier : `backupJson { songs, tags, lists, spAuth? }`
+  — sa signature pilote le point ambre « dirty » ; en changer le format
+  change la signature. `spAuth` (identifiants Spotify) vit dans sa propre
+  clé de stockage, pas dans `carnet:v4`.
 
 ### Écriture des accords
 
@@ -178,21 +179,46 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   triangle (`PlayIcon`, `--hot` chez Apple, `--spot` chez Spotify — vert de
   marque en sombre, assombri en clair pour tenir sur du blanc). Un seul point
   de passage au rendu : `playLink` / `playTitle` / `linked`.
-- Apple Music : recherche automatique (index iTunes public, voir plus haut).
-  Spotify **n'a pas d'équivalent** — son API de recherche réclame un jeton et
-  l'endpoint anonyme du lecteur web répond que son usage « n'est pas permis
-  par les conditions développeur » ; ne pas y retourner. Deux voies sans
-  compte ni clé :
-  1. `spLink` — lien de **recherche** pré-remplie (titre + artiste, l'artiste
-     emprunté à `am` quand la chanson n'en a pas). Construit hors ligne,
-     toujours disponible : sur iPhone il ouvre l'app Spotify sur la chanson.
-  2. Le lien de **piste** exact, collé une fois (⋯ → Partager → Copier le
+- Apple Music : recherche automatique par l'index iTunes public (voir plus
+  haut). Spotify n'a **rien de public** : son API de recherche réclame un
+  jeton, l'endpoint anonyme du lecteur web répond que son usage « n'est pas
+  permis par les conditions développeur » (ne pas y retourner), `spotify:search:`
+  n'est plus supporté par l'app, et Spotify ne documente **aucun** deep link
+  de recherche par texte. Trois voies, dans cet ordre de qualité :
+  1. **Recherche automatique authentifiée** — l'utilisateur crée une « app »
+     Spotify à son nom et colle son `Client ID` + `Client Secret` dans les
+     Réglages (`spauth:v1`, sa propre clé de stockage). `spAccessToken`
+     obtient un jeton `client_credentials` (en-tête Basic, 1 h, gardé hors de
+     React dans `spTok`, marge d'une minute, renouvelé au besoin ; un 401 en
+     vol vaut **une** reprise), `spSearch` interroge `/v1/search`
+     (`type=track&limit=10&market=FR`, terme = `amTerm`) et `spAsItunes`
+     traduit chaque piste dans la forme des réponses iTunes — donc
+     `scoreMatch`/`classifyAm` s'appliquent tels quels : mêmes seuils, mêmes
+     versions parasites, même trio auto/pick/none, même modal de choix.
+     Les deux points d'entrée répondent avec **CORS ouvert** : aucun miroir,
+     et 250 ms entre deux chansons suffisent (contre 3,5 s chez Apple).
+     Des identifiants refusés (400/401 au jeton) sont mémorisés dans
+     `spBadAuth` : un scan s'arrête au lieu de marteler.
+  2. Le lien de **piste** exact, collé à la main (⋯ → Partager → Copier le
      lien), normalisé par `spIdFrom` (accepte `open.spotify.com/track/…`,
      un préfixe `intl-xx`, l'URI `spotify:track:…`, l'id nu ; le `?si=` de
      suivi est jeté) puis nommé et validé par l'**oEmbed public** de Spotify
-     — le seul point d'entrée officiel qui réponde sans jeton, CORS ouvert.
-     404 = piste inconnue, le lien est refusé ; service injoignable = le lien
-     est gardé quand même, seul son nom manque.
+     — sans jeton, CORS ouvert. 404 = piste inconnue, le lien est refusé ;
+     service injoignable = le lien est gardé quand même, seul son nom manque.
+     Reste offert même avec identifiants : c'est le recours quand la
+     recherche se trompe.
+  3. `spLink` — lien de **recherche** pré-remplie, quand la chanson n'a pas
+     de lien mémorisé. Construit hors ligne, toujours disponible. Vérifié sur
+     iPhone : **l'app Spotify doit être installée** pour que le renvoi ait
+     lieu (`/search/*` est bien dans l'`apple-app-site-association` de
+     Spotify) — sans elle, on tombe dans le lecteur web mobile, qui jette le
+     terme.
+- Les identifiants Spotify entrent dans la **sauvegarde en fichier**
+  (`backupJson`, champ `spAuth` — choix du propriétaire : un appareil neuf
+  retrouve la recherche automatique) mais **jamais** dans l'URL de partage.
+  Corollaire dit dans l'interface au moment d'enregistrer : ce fichier ne se
+  donne pas tel quel. À l'import ils ne sont adoptés que si l'appareil n'en a
+  aucun — un import est une fusion, le carnet d'un ami n'écrase pas les vôtres.
 - L'icône de carte dans la liste n'apparaît que pour un lien **mémorisé** du
   service choisi (même doctrine qu'Apple Music) — la barre du haut, elle,
   propose toujours un lien.
