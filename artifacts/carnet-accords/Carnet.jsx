@@ -2807,6 +2807,7 @@ export default function Carnet() {
   const fileRef = useRef(null);
   const searchRef = useRef(null);
   const syncHashRef = useRef(false);
+  const [upCheck, setUpCheck] = useState(null); // recherche de mise à jour : null | "busy" | "found" | "none"
   const [libScrolled, setLibScrolled] = useState(false); // scroll en cours dans la bibliothèque — la palette flottante s'efface
   const libScrollTimer = useRef(0);
 
@@ -3997,6 +3998,14 @@ export default function Carnet() {
       : cached
         ? `Prêt pour l'avion ✓ — l'application démarre et le carnet se lit sans réseau, import de PDF compris (${mo(offline.vendor.total)} de librairies en cache).`
         : `L'application démarre et le carnet se lit déjà sans réseau. Pour l'import de PDF, il reste ${mo(Math.max(0, offline.vendor.total - offline.vendor.done))} à mettre en cache.`;
+  /* Vérification de mise à jour : null | "busy" | "found" | "none". Non
+     persistée — un résultat vieux d'une session ne veut plus rien dire. */
+  const checkUpdate = async () => {
+    if (!window.offline || !window.offline.check) { reloadFresh(true); return; }
+    setUpCheck("busy");
+    const found = await window.offline.check();
+    setUpCheck(found ? "found" : "none");
+  };
   const appVersion = useMemo(() => {
     const s = document.querySelector('script[src*="app.js"]');
     const m = s && /[?&]v=([0-9a-f]+)/.exec(s.getAttribute("src") || "");
@@ -4903,18 +4912,51 @@ export default function Carnet() {
             </div>
             <div className="field">
               <label>Mise à jour</label>
+              {/* Un seul bouton à la fois, et l'état dit en mots au-dessus :
+                  le bouton changeait d'allure sans que rien n'explique
+                  pourquoi. Bleu = quelque chose est prêt à installer, tout de
+                  suite et sans réseau ; blanc = il n'y a rien en attente, ce
+                  bouton va le demander au serveur. Le rechargement forcé, lui,
+                  n'apparaît qu'après une vérification restée vide : c'est le
+                  dernier recours, pas la manœuvre normale. */}
               <p className="hint">
                 Version du code : <b>{appVersion}</b>.{" "}
-                {offline && offline.waiting
-                  ? "Une nouvelle version est prête : ce bouton l'installe et recharge la page — sans toucher à vos données."
-                  : "Si l'application semble en retard sur la dernière version publiée, ce bouton recharge la page en contournant le cache du navigateur — sans toucher à vos données."}
+                {!offline || !offline.supported
+                  ? "Ici, pas de service worker : seul le rechargement en contournant le cache du navigateur peut rafraîchir le code."
+                  : offline.waiting
+                    ? (offline.warming
+                      // Un préchargement en cours tient un waitUntil ouvert sur
+                      // le worker actif, et l'activation attend qu'il retombe :
+                      // le clic n'est pas perdu, il s'applique juste après.
+                      // Sans ce mot, le bouton a l'air en panne.
+                      ? "Une nouvelle version attend. La préparation du cache est en cours : l'installation s'appliquera dès qu'elle sera finie."
+                      : "Une nouvelle version est déjà téléchargée et attend : ce bouton l'installe et recharge la page, sans réseau et sans toucher à vos données.")
+                    : upCheck === "found"
+                      ? "Nouvelle version trouvée — téléchargement en cours ; le bouton d'installation apparaîtra tout seul."
+                      : upCheck === "none"
+                        ? "Vérifié à l'instant : cet appareil a déjà la dernière version publiée."
+                        : "Aucune mise à jour en attente. Le carnet vérifie de lui-même à chaque ouverture ; ce bouton le redemande maintenant."}
               </p>
             </div>
             <div className="actions">
-              {offline && offline.waiting
-                ? <button className="btn primary" onClick={() => window.offline.update()}>Installer la nouvelle version</button>
-                : <button className="btn" onClick={() => reloadFresh(true)}>Recharger la dernière version</button>}
+              {!offline || !offline.supported ? (
+                <button className="btn primary" onClick={() => reloadFresh(true)}>Recharger la dernière version</button>
+              ) : offline.waiting ? (
+                <button className="btn primary" onClick={() => window.offline.update()}>Installer la nouvelle version</button>
+              ) : (
+                <button className="btn" disabled={!online || upCheck === "busy" || upCheck === "found"}
+                  title={online ? "Demander au serveur s'il existe une version plus récente" : "Hors ligne"}
+                  onClick={checkUpdate}>
+                  {upCheck === "busy" ? "Vérification…" : upCheck === "found" ? "Téléchargement…" : "Chercher une mise à jour"}
+                </button>
+              )}
             </div>
+            {upCheck === "none" && (
+              <div className="actions">
+                <button className="btn ghost" title="Dernier recours : recharger la page en contournant le cache du navigateur"
+                  onClick={() => reloadFresh(true)}>Forcer le rechargement</button>
+              </div>
+            )}
             <div className="field">
               <label>Lecture</label>
               <p className="hint">
