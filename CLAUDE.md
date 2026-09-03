@@ -104,6 +104,26 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 - Les **ids de chansons sont régénérés à chaque import** : tags (`tags:v1`)
   et listes (`lists:v1`) sont ancrés par `songKey` (titre|artiste
   normalisés) et suivent un renommage via `moveTags`/`moveLists`.
+- **Ordre à la main d'une liste manuelle** : `lists.order = { listId:
+  [songKey…] }`, ancré par `songKey` comme l'appartenance — et un renommage de
+  chanson garde sa **place** dans l'ordre (`moveLists`), la reléguer en fin de
+  setlist pour une faute de frappe corrigée serait absurde. Le tri `"list"`
+  (quatrième pastille, visible seulement quand la liste affichée a un ordre)
+  l'applique ; les chansons ajoutées depuis le dernier rangement ne sont pas
+  dans le tableau et se rangent **à la fin**, par titre. Hors d'une liste
+  ordonnée, `sort === "list"` retombe sur le titre (`sortSongs`, un seul
+  classement partagé par la liste affichée et celle qu'on réorganise, sans
+  quoi entrer en réorganisation rebattrait les cartes). Le mode se déclenche
+  par le ⇅ de la ligne de filtre (jamais pour un artiste : un fait ne se
+  range pas), travaille sur la **liste entière** — recherche et tags mis de
+  côté, sinon l'ordre enregistré serait incomplet — et enregistre à chaque
+  lâcher, pas sur un bouton « Valider ». Le glissé est en **Pointer Events**
+  (un seul chemin doigt + souris, `setPointerCapture` garde le geste,
+  `touch-action:none` sur la poignée sans quoi il part en défilement) et la
+  carte au doigt n'est pas déplacée par une transformée : c'est la **liste
+  qui se réordonne sous elle**, ce qui supprime toute dérive entre le doigt
+  et le rendu. Une boucle `requestAnimationFrame` fait défiler quand le doigt
+  s'immobilise près d'un bord — sans elle, plus aucun `pointermove` n'arrive.
 - Le menu déroulant de la bibliothèque tient **deux zones** (`<optgroup>`) :
   les listes manuelles — avec « ＋ Nouvelle liste… » **dedans**, sinon elle
   serait introuvable sous quarante artistes — puis les **artistes du carnet**,
@@ -123,8 +143,13 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 - `normalizeLibrary` est le seul point de passage des imports (URL,
   fichier, collage) : **tout nouveau champ de chanson doit y être
   préservé**, sinon il est silencieusement perdu au premier transfert.
-- URL de partage (`#v=1&data=…`) : songs + réglages, **sans** tags ni
-  listes. Sauvegarde fichier : `backupJson { songs, tags, lists, spAuth? }`
+- URL de partage (`#v=1&data=…`) : songs + réglages **et les listes
+  manuelles avec leur ordre** (`lists { defs, byKey, order? }` — décision du
+  propriétaire : une setlist sans son ordre ne sert à rien) ; **sans** tags,
+  qui restent un classement personnel. À l'ouverture d'un lien les listes
+  reçues sont **fusionnées** (`mergeLists`), jamais substituées : un ordre
+  déjà décidé sur l'appareil survit au lien.
+  Sauvegarde fichier : `backupJson { songs, tags, lists, spAuth? }`
   — sa signature pilote le point ambre « dirty » ; en changer le format
   change la signature. `spAuth` (identifiants Spotify) vit dans sa propre
   clé de stockage, pas dans `carnet:v4`.

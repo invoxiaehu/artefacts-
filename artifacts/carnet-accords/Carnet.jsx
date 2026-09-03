@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from "react";
 
 /* ==================================================================
    Deux librairies font le travail :
@@ -724,11 +724,14 @@ function normalizeLibrary(data) {
   if (typeof src.showChords === "boolean") lib.showChords = src.showChords;
   if (Number(src.size)) lib.size = Number(src.size);
   if (Number(src.speed)) lib.speed = Number(src.speed);
-  if (src.sort === "title" || src.sort === "artist" || src.sort === "memo") lib.sort = src.sort;
+  // « list » accepté depuis qu'un lien emporte les listes ET leur ordre :
+  // sinon celui qui reçoit la setlist la verrait rangée par titre. Sans liste
+  // affichée, ce tri retombe de lui-même sur le titre (voir sortSongs).
+  if (["title", "artist", "memo", "list"].includes(src.sort)) lib.sort = src.sort;
   return lib;
 }
 
-async function encodeShare(library) {
+async function encodeShare(library, lists) {
   if (typeof CompressionStream !== "function") {
     throw new Error("CompressionStream indisponible dans ce navigateur");
   }
@@ -746,6 +749,14 @@ async function encodeShare(library) {
     size: library.size,
     speed: library.speed,
     sort: library.sort,
+    // Les listes manuelles ET leur ordre voyagent dans l'URL — choix du
+    // propriétaire du carnet : une setlist sans son ordre ne sert à rien, et
+    // l'ordre sans la liste n'a pas de sens. Mesuré : à côté des grilles,
+    // quelques dizaines de songKey ne pèsent rien une fois compressées. Les
+    // tags, eux, restent dehors : c'est un classement personnel.
+    ...(lists && (lists.defs.length || Object.keys(lists.byKey).length)
+      ? { lists: { defs: lists.defs, byKey: lists.byKey, ...(lists.order && Object.keys(lists.order).length ? { order: lists.order } : {}) } }
+      : {}),
   });
   const raw = new TextEncoder().encode(json);
   const packed = await gzipBytes(raw);
@@ -762,7 +773,12 @@ async function decodeShareData(data) {
     }
     jsonBytes = await gunzipBytes(bytes);
   }
-  return normalizeLibrary(JSON.parse(new TextDecoder().decode(jsonBytes)));
+  const parsed = JSON.parse(new TextDecoder().decode(jsonBytes));
+  const lib = normalizeLibrary(parsed);
+  // Les listes arrivent à côté du carnet : normalizeLibrary ne s'occupe que
+  // des grilles et des réglages, et l'appelant décide de la fusion.
+  const lists = normalizeLists(parsed && parsed.lists);
+  return lists ? { ...lib, lists } : lib;
 }
 
 /** Retrouve le paramètre data dans ce qu'on lui donne : un fragment,
@@ -933,7 +949,7 @@ async function saveTags(t) {
    régénérés à chaque import), hors de l'URL de partage, mais dans la
    sauvegarde en fichier. */
 const LISTS_KEY = "lists:v1";
-const freshLists = () => ({ defs: [], byKey: {} });
+const freshLists = () => ({ defs: [], byKey: {}, order: {} });
 
 function normalizeLists(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -952,7 +968,16 @@ function normalizeLists(raw) {
     const keep = [...new Set(list.filter((id) => ids.has(id)))];
     if (keep.length) byKey[k.slice(0, 200)] = keep;
   }
-  return { defs, byKey };
+  // Ordre choisi à la main dans une liste : des songKey, comme l'appartenance
+  // — les ids de chansons sont régénérés à chaque import, eux ne le sont pas.
+  // Une liste sans entrée ici n'a pas d'ordre : elle suit le tri courant.
+  const order = {};
+  for (const [id, keys] of Object.entries(raw.order && typeof raw.order === "object" ? raw.order : {})) {
+    if (!ids.has(id) || !Array.isArray(keys)) continue;
+    const keep = [...new Set(keys.filter((k) => typeof k === "string" && k).map((k) => k.slice(0, 200)))];
+    if (keep.length) order[id] = keep;
+  }
+  return { defs, byKey, order };
 }
 
 function mergeLists(prev, added) {
@@ -964,7 +989,15 @@ function mergeLists(prev, added) {
     const keep = [...new Set([...(byKey[k] || []), ...list])].filter((id) => defs.some((d) => d.id === id));
     if (keep.length) byKey[k] = keep;
   }
-  return { defs, byKey };
+  // Un ordre déjà décidé sur cet appareil ne se fait pas réécrire par un
+  // import : les chansons apportées se rangent à la suite. Une liste inconnue
+  // arrive, elle, avec son ordre intact.
+  const order = { ...(prev.order || {}) };
+  for (const [id, keys] of Object.entries(added.order || {})) {
+    if (!defs.some((d) => d.id === id)) continue;
+    order[id] = order[id] ? [...order[id], ...keys.filter((k) => !order[id].includes(k))] : [...keys];
+  }
+  return { defs, byKey, order };
 }
 
 async function loadLists() {
@@ -1813,8 +1846,15 @@ const CSS = `
 .searchx:hover { color:var(--ink); background:var(--acc-soft); }
 /* Filtres sur une ligne : la liste (2/3) puis le menu des tags (1/3). */
 .filterrow { display:flex; gap:8px; margin-top:10px; position:relative; }
-.filterrow .listsel { flex:2; }
+.filterrow .listsel { flex:2; min-width:0; }
+/* Le ⇅ de réorganisation s'ajoute à cette ligne quand une liste est
+   affichée : il prend sa largeur fixe, le menu des tags garde la sienne
+   (« Tags » entier, jamais « T… »), et c'est le nom de la liste qui se
+   tronque — lui, on sait déjà lequel on a choisi. */
+.filterrow .reorderbtn { flex:0 0 40px; }
 .tagdd { flex:1; min-width:0; display:flex; }
+.filterrow.withreorder .tagdd { flex:0 0 auto; }
+.filterrow.withreorder .tagddbtn { padding-right:11px; }
 .tagddbtn { width:100%; display:flex; align-items:center; gap:5px; text-align:left;
   overflow:hidden; white-space:nowrap; }
 .tagddbtn > span { overflow:hidden; text-overflow:ellipsis; }
@@ -1857,7 +1897,10 @@ const CSS = `
 .cb.light .floatbar .btn { background:var(--panel); }
 /* Ligne du tri : les boutons à gauche, le compteur de chansons à droite. */
 .sortrow { display:flex; align-items:center; gap:8px; margin-top:10px; min-height:24px; }
-.sortrow .count { margin-left:auto; }
+.sortrow .count { margin-left:auto; white-space:nowrap; }
+/* Avec la pastille « Liste », la ligne compte quatre tris : à 375 px il faut
+   resserrer, sinon le compteur se casse en deux lignes. Mesuré, pas deviné. */
+.seg2.tight button { padding:8px 8px; letter-spacing:.08em; }
 .count { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase; margin:0; }
 .notice { position:relative; border:1px solid var(--amber-dim); background:var(--acc-faint); border-radius:10px;
   padding:11px 40px 11px 13px; font-size:13px; line-height:1.5; margin-bottom:12px; }
@@ -1871,6 +1914,25 @@ const CSS = `
 .cardmain { flex:1; min-width:0; display:flex; align-items:center; gap:14px; padding:13px 14px; text-align:left; }
 .cardmain:active { transform:scale(.996); }
 .carddel { flex:0 0 auto; padding:0 13px; color:var(--muted); border-left:1px solid var(--line); font-size:14px; }
+/* Réorganisation d'une liste. La poignée doit être large au doigt (44 pt
+   d'Apple) et couper le défilement de page : sans touch-action:none, le
+   glissé part en scroll et le code ne voit jamais rien. */
+.reorderbtn { text-align:center; padding:9px 0; font-size:15px;
+  background:var(--panel2); color:var(--amber); }
+.reorderbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  border:1px solid var(--amber-dim); background:var(--acc-soft); border-radius:10px;
+  padding:10px 12px; margin-bottom:10px; font-size:12.5px; color:var(--muted); line-height:1.45; }
+.reorderbar span { flex:1; min-width:150px; }
+.reorderbar i { font-style:normal; color:var(--amber); }
+.cardgrip { flex:0 0 auto; width:46px; display:grid; place-items:center; color:var(--muted);
+  border-right:1px solid var(--line); background:var(--panel2);
+  touch-action:none; cursor:grab; font-size:17px; }
+.cardgrip i { font-style:normal; font-size:19px; line-height:1; }
+.cardgrip:active { cursor:grabbing; color:var(--amber); }
+.card.reordering { border-left-color:var(--amber-dim); }
+.card.reordering .cardmain { opacity:.75; }
+.card.dragging { border-color:var(--amber); border-left-color:var(--amber);
+  background:var(--panel2); box-shadow:0 6px 18px rgba(0,0,0,.35); }
 .carddel:hover { color:var(--hot); background:rgba(200,80,60,.08); }
 .seg2 { display:flex; border:1px solid var(--line); border-radius:8px; background:var(--panel2); overflow:hidden; }
 .seg2 button { padding:8px 13px; font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
@@ -2518,7 +2580,7 @@ function Transfer({ library, tags, lists, spAuth, engine, backup, dirty, onImpor
     if (!songs.length) { setShare({ error: "le carnet est vide" }); return; }
     (async () => {
       try {
-        const s = await encodeShare(library);
+        const s = await encodeShare(library, lists);
         const url = window.location.origin + window.location.pathname + window.location.search + s.hash;
         if (alive) setShare({ ...s, url });
       } catch (e) {
@@ -2526,7 +2588,7 @@ function Transfer({ library, tags, lists, spAuth, engine, backup, dirty, onImpor
       }
     })();
     return () => { alive = false; };
-  }, [library, songs.length]);
+  }, [library, lists, songs.length]);
 
   const doImport = async (raw) => {
     const t = String(raw == null ? text : raw).trim();
@@ -2549,6 +2611,7 @@ function Transfer({ library, tags, lists, spAuth, engine, backup, dirty, onImpor
         const data = extractShareData(t);
         if (!data) throw new Error();
         lib = await decodeShareData(data);
+        addedLists = lib.lists || null; // les listes voyagent dans l'URL, les tags non
       }
       onImport(lib.songs, lib, addedTags, addedLists, addedAuth);
       const withTags = addedTags && (addedTags.defs.length || Object.keys(addedTags.byKey).length);
@@ -2825,6 +2888,14 @@ export default function Carnet() {
   const searchRef = useRef(null);
   const syncHashRef = useRef(false);
   const [upCheck, setUpCheck] = useState(null); // recherche de mise à jour : null | "busy" | "found" | "none"
+  // Réorganisation d'une liste manuelle : hors persistance, c'est un mode de
+  // travail. dragRows tient l'ordre en cours (ids), dragId la carte au doigt.
+  const [reorder, setReorder] = useState(false);
+  const [dragRows, setDragRows] = useState(null);
+  const [dragId, setDragId] = useState(null);
+  const dragRef = useRef(null); // { pointerId, y } pendant le glissé
+  const libScrollRef = useRef(null);
+  const autoRef = useRef(0); // boucle d'auto-défilement (requestAnimationFrame)
   const [libScrolled, setLibScrolled] = useState(false); // scroll en cours dans la bibliothèque — la palette flottante s'efface
   const libScrollTimer = useRef(0);
 
@@ -2861,12 +2932,19 @@ export default function Carnet() {
       const mark = await loadBackup();
       if (!alive) return;
       if (saved) setTags(saved);
-      if (savedLists) setLists(savedLists);
+      // Les listes du lien se fusionnent avec celles de l'appareil : un ordre
+      // déjà décidé ici n'est pas réécrit par le lien (mergeLists).
+      const linkLists = carnet.lists || null;
+      if (savedLists || linkLists) {
+        setLists(linkLists ? mergeLists(savedLists || freshLists(), linkLists) : savedLists);
+      }
       if (mark) setBackup(mark);
       if (typeof carnet.showChords === "boolean") setShowChords(carnet.showChords);
       if (carnet.size) setSize(carnet.size);
       if (carnet.speed) setSpeed(carnet.speed);
-      if (carnet.sort === "title" || carnet.sort === "artist" || carnet.sort === "memo") setSort(carnet.sort);
+      // « list » = l'ordre à la main d'une liste ; sans liste ordonnée affichée
+      // il retombe de lui-même sur le tri par titre (voir sortSongs).
+      if (["title", "artist", "memo", "list"].includes(carnet.sort)) setSort(carnet.sort);
       if (carnet.sortDir === "desc") setSortDir("desc");
       if (typeof carnet.barOpen === "boolean") setBarOpen(carnet.barOpen);
       if (carnet.theme === "dark" || carnet.theme === "light") setTheme(carnet.theme);
@@ -3462,6 +3540,38 @@ export default function Carnet() {
     return hit ? hit.name : "";
   }, [listFilter, artists]);
   const activeFilter = activeArtist ? ARTIST_PREFIX + activeArtist : activeList;
+  /* Ordre à la main de la liste affichée, s'il y en a un. Un ordre vide ou
+     appartenant à une autre liste ne compte pas : le tri « Liste » n'apparaît
+     que là où il veut dire quelque chose. */
+  const listOrder = (activeList && lists.order && lists.order[activeList]) || null;
+  /* Un tri « list » hérité d'une autre liste se comporte comme un tri par
+     titre (voir sortSongs) : la pastille allumée doit le dire. */
+  const sortShown = sort === "list" && !listOrder ? "title" : sort;
+
+  /* Classement, isolé pour que la liste affichée et la liste qu'on réorganise
+     partent du même ordre — sinon entrer en réorganisation rebattrait les
+     cartes sous les yeux de l'utilisateur. */
+  const sortSongs = useCallback((list) => {
+    // Ordre choisi à la main : il ne vaut que dans SA liste, et seulement si
+    // elle en a un. Les chansons ajoutées depuis le dernier rangement ne sont
+    // pas dans le tableau — elles se rangent à la fin, par titre, au lieu de
+    // disparaître ou de passer en tête.
+    if (sort === "list" && listOrder) {
+      const rank = new Map(listOrder.map((k, i) => [k, i]));
+      const at = (x) => (rank.has(songKey(x)) ? rank.get(songKey(x)) : Number.MAX_SAFE_INTEGER);
+      return [...list].sort((a, b) => (at(a) - at(b)) || a.title.localeCompare(b.title, "fr"));
+    }
+    // Tri par note, ascendant par défaut : les moins connues d'abord — l'ordre
+    // de travail. Re-taper le tri actif inverse l'ordre (dir).
+    const dir = sortDir === "desc" ? -1 : 1;
+    if (sort === "memo") {
+      return [...list].sort((a, b) =>
+        dir * (((a.memo || 0) - (b.memo || 0)) || a.title.localeCompare(b.title, "fr")));
+    }
+    const key = sort === "artist" ? (x) => (x.artist || "").trim() : (x) => x.title;
+    return [...list].sort((a, b) =>
+      dir * (key(a).localeCompare(key(b), "fr") || a.title.localeCompare(b.title, "fr")));
+  }, [sort, sortDir, listOrder]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -3478,17 +3588,16 @@ export default function Carnet() {
         return tagFilter.every((id) => ids.includes(id));
       });
     }
-    // Tri par note, ascendant par défaut : les moins connues d'abord — l'ordre
-    // de travail. Re-taper le tri actif inverse l'ordre (dir).
-    const dir = sortDir === "desc" ? -1 : 1;
-    if (sort === "memo") {
-      return [...list].sort((a, b) =>
-        dir * (((a.memo || 0) - (b.memo || 0)) || a.title.localeCompare(b.title, "fr")));
-    }
-    const key = sort === "artist" ? (s) => (s.artist || "").trim() : (s) => s.title;
-    return [...list].sort((a, b) =>
-      dir * (key(a).localeCompare(key(b), "fr") || a.title.localeCompare(b.title, "fr")));
-  }, [songs, query, sort, sortDir, tagFilter, tags, activeList, activeArtist, lists]);
+    return sortSongs(list);
+  }, [songs, query, tagFilter, tags, activeList, activeArtist, lists, sortSongs]);
+
+  /* Les chansons de la liste affichée, sans la recherche ni les tags : c'est
+     sur l'ensemble de la liste qu'on décide d'un ordre, jamais sur un
+     sous-ensemble filtré — sinon l'ordre enregistré serait incomplet. */
+  const listSongs = useMemo(() => {
+    if (!activeList) return [];
+    return sortSongs(songs.filter((x) => (lists.byKey[songKey(x)] || []).includes(activeList)));
+  }, [songs, lists, activeList, sortSongs]);
 
   const importFiles = async (files) => {
     if (!files || !files.length) return;
@@ -3744,7 +3853,13 @@ export default function Carnet() {
     const byKey = { ...l.byKey };
     byKey[to] = [...new Set([...(byKey[to] || []), ...byKey[from]])];
     delete byKey[from];
-    return { ...l, byKey };
+    // La chanson renommée garde SA PLACE dans les ordres : la reléguer en fin
+    // de setlist parce qu'on a corrigé une faute de frappe serait absurde.
+    const order = {};
+    for (const [id, keys] of Object.entries(l.order || {})) {
+      order[id] = keys.includes(from) ? [...new Set(keys.map((k) => (k === from ? to : k)))] : keys;
+    }
+    return { ...l, byKey, order };
   });
   const createList = () => {
     const name = (window.prompt("Nom de la nouvelle liste :") || "").trim().slice(0, 40);
@@ -3766,7 +3881,9 @@ export default function Carnet() {
         const keep = arr.filter((x) => x !== id);
         if (keep.length) byKey[k] = keep;
       }
-      return { defs: l.defs.filter((d) => d.id !== id), byKey };
+      const order = { ...(l.order || {}) };
+      delete order[id];
+      return { defs: l.defs.filter((d) => d.id !== id), byKey, order };
     });
   };
   const setTagField = (id, field, value) => setTags((t) => ({
@@ -4071,6 +4188,93 @@ export default function Carnet() {
     return m ? m[1] : "dev";
   }, []);
 
+  /* ---------------------------------------------------------------- */
+  /* Réorganisation d'une liste manuelle. Pointer Events plutôt que      */
+  /* touch : un seul chemin de code pour le doigt et la souris, et       */
+  /* setPointerCapture garde le geste même quand le doigt sort de la     */
+  /* poignée. La carte au doigt n'est pas déplacée par une transformée : */
+  /* c'est la LISTE qui se réordonne en direct sous elle. Moins de       */
+  /* calcul, aucune dérive possible entre le doigt et le rendu.          */
+  /* ---------------------------------------------------------------- */
+  const startReorder = () => {
+    if (!activeList) return;
+    setDragRows(listSongs.map((x) => x.id));
+    setReorder(true);
+  };
+  const endReorder = () => { setReorder(false); setDragRows(null); setDragId(null); };
+  // Quitter la liste (ou l'app) referme le mode : un ordre à moitié rangé
+  // n'est pas perdu pour autant, chaque lâcher a déjà été enregistré.
+  useEffect(() => { if (reorder && !activeList) endReorder(); }, [reorder, activeList]);
+
+  /* Enregistré à chaque lâcher, pas sur un bouton « Valider » : c'est
+     l'habitude de l'app, et un ordre à moitié rangé vaut mieux que rien.
+     Le tri passe sur « Liste » du même coup — sans quoi le rangement
+     n'aurait aucun effet visible. */
+  const commitOrder = (ids) => {
+    if (!activeList) return;
+    const byId = new Map(songs.map((x) => [x.id, x]));
+    const keys = ids.map((id) => byId.get(id)).filter(Boolean).map((x) => songKey(x));
+    setLists((l) => ({ ...l, order: { ...(l.order || {}), [activeList]: keys } }));
+    setSort("list");
+  };
+
+  const stopDragScroll = () => { if (autoRef.current) { cancelAnimationFrame(autoRef.current); autoRef.current = 0; } };
+  /* Le doigt qui s'immobilise près d'un bord doit continuer à faire défiler :
+     sans boucle propre, plus aucun pointermove n'arrive et la liste se fige. */
+  const dragScroll = () => {
+    autoRef.current = 0;
+    const box = libScrollRef.current, d = dragRef.current;
+    if (!box || !d) return;
+    const r = box.getBoundingClientRect();
+    const EDGE = 72;
+    const up = d.y - r.top, down = r.bottom - d.y;
+    let step = 0;
+    if (up < EDGE) step = -Math.ceil((EDGE - up) / 6);
+    else if (down < EDGE) step = Math.ceil((EDGE - down) / 6);
+    if (step) box.scrollTop += step;
+    autoRef.current = requestAnimationFrame(dragScroll);
+  };
+
+  const onGripDown = (e, id) => {
+    if (!dragRows) return;
+    e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* souris sans capture */ }
+    dragRef.current = { pointerId: e.pointerId, y: e.clientY };
+    setDragId(id);
+    stopDragScroll();
+    autoRef.current = requestAnimationFrame(dragScroll);
+  };
+  const onGripMove = (e) => {
+    const d = dragRef.current;
+    if (!d || !dragId || e.pointerId !== d.pointerId) return;
+    e.preventDefault();
+    d.y = e.clientY;
+    const box = libScrollRef.current;
+    if (!box) return;
+    const cards = [...box.querySelectorAll(".card")];
+    // La carte survolée, par sa boîte : dans l'espace entre deux cartes on ne
+    // bouge rien plutôt que d'inventer une cible.
+    const over = cards.findIndex((c) => {
+      const r = c.getBoundingClientRect();
+      return d.y >= r.top && d.y <= r.bottom;
+    });
+    if (over < 0) return;
+    const from = dragRows.indexOf(dragId);
+    if (from < 0 || over === from) return;
+    const next = [...dragRows];
+    next.splice(over, 0, next.splice(from, 1)[0]);
+    setDragRows(next);
+  };
+  const onGripUp = (e) => {
+    const d = dragRef.current;
+    if (!d || (e && e.pointerId !== d.pointerId)) return;
+    dragRef.current = null;
+    stopDragScroll();
+    setDragId(null);
+    if (dragRows) commitOrder(dragRows);
+  };
+  useEffect(() => stopDragScroll, []);
+
   // Palette flottante : effacée pendant le scroll de la liste, revenue
   // ~250 ms après le dernier mouvement.
   const onLibScroll = () => {
@@ -4159,7 +4363,7 @@ export default function Carnet() {
 
       {view === "lib" && (
         <>
-          <div className="libscroll" onScroll={onLibScroll}>
+          <div className="libscroll" ref={libScrollRef} onScroll={onLibScroll}>
           {topbar}
           {/* En-tête figé : recherche, liste + tags sur une ligne, tri et
               compteur sur la suivante. Les actions vivent dans la palette
@@ -4176,7 +4380,7 @@ export default function Carnet() {
               )}
             </div>
             {songs.length > 0 && (
-                <div className="filterrow">
+                <div className={"filterrow" + (activeList && !reorder ? " withreorder" : "")}>
                   {/* Deux zones, en <optgroup> : les listes qu'on constitue à
                       la main, puis les artistes du carnet — des recherches
                       enregistrées, tirées des données. iOS met les intitulés de
@@ -4205,6 +4409,12 @@ export default function Carnet() {
                       </optgroup>
                     )}
                   </select>
+                  {/* Réorganiser : seulement quand une liste manuelle est
+                      affichée — un artiste est un fait, il ne se range pas. */}
+                  {activeList && !reorder && (
+                    <button className="listsel reorderbtn" title="Réorganiser cette liste à la main"
+                      onClick={startReorder}>⇅</button>
+                  )}
                   {tags.defs.length > 0 && (
                     <div className="tagdd">
                       <button className={"listsel tagddbtn" + (tagFilter.length ? " on" : "")}
@@ -4247,17 +4457,24 @@ export default function Carnet() {
             {songs.length > 0 && (
               <div className="sortrow">
                 {songs.length > 1 && (
-                  <div className="seg2">
-                    {[["title", "Titre"], ["artist", "Artiste"], ["memo", "Note"]].map(([k, lab]) => (
-                      <button key={k} className={sort === k ? "on" : ""} aria-pressed={sort === k}
-                        title={sort === k
-                          ? (sortDir === "asc" ? "Inverser : ordre descendant" : "Inverser : ordre ascendant")
-                          : k === "memo" ? "Trier par note d'apprentissage — les moins connues d'abord" : undefined}
+                  <div className={"seg2" + (listOrder ? " tight" : "")}>
+                    {/* « Liste » n'apparaît que si la liste affichée a un ordre
+                        à la main : ailleurs, ce tri ne voudrait rien dire. */}
+                    {[...(listOrder ? [["list", "Liste"]] : []), ["title", "Titre"], ["artist", "Artiste"], ["memo", "Note"]].map(([k, lab]) => (
+                      <button key={k} className={sortShown === k ? "on" : ""} aria-pressed={sortShown === k}
+                        title={k === "list"
+                          ? "L'ordre choisi à la main pour cette liste"
+                          : sortShown === k
+                            ? (sortDir === "asc" ? "Inverser : ordre descendant" : "Inverser : ordre ascendant")
+                            : k === "memo" ? "Trier par note d'apprentissage — les moins connues d'abord" : undefined}
                         onClick={() => {
-                          if (sort === k) setSortDir(sortDir === "asc" ? "desc" : "asc");
+                          // L'ordre à la main n'a pas de sens inversé : re-taper
+                          // « Liste » ne retourne pas la setlist.
+                          if (k === "list") { setSort("list"); return; }
+                          if (sortShown === k) setSortDir(sortDir === "asc" ? "desc" : "asc");
                           else { setSort(k); setSortDir("asc"); }
                         }}>
-                        {lab}{sort === k && <i className="sortdir">{sortDir === "asc" ? "↑" : "↓"}</i>}
+                        {lab}{sortShown === k && k !== "list" && <i className="sortdir">{sortDir === "asc" ? "↑" : "↓"}</i>}
                       </button>
                     ))}
                   </div>
@@ -4309,11 +4526,29 @@ export default function Carnet() {
                   : <p>Rien dans cette sélection — la liste ou les tags actifs ne retiennent aucune chanson.</p>}
               </div>
             )}
-            {filtered.map((s) => {
+            {reorder && (
+              <div className="reorderbar">
+                <span>Glissez les poignées <i>⠿</i> pour ranger la liste
+                  entière — recherche et tags mis de côté.</span>
+                <button className="btn slim primary" onClick={endReorder}>Terminé</button>
+              </div>
+            )}
+            {(reorder && dragRows
+              ? dragRows.map((id) => songs.find((x) => x.id === id)).filter(Boolean)
+              : filtered).map((s) => {
               const marks = tagsOf(s);
               return (
-              <div className="card" key={s.id}>
-                <button className="cardmain" onClick={() => openFromList(s.id)}>
+              <div className={"card" + (reorder ? " reordering" : "") + (dragId === s.id ? " dragging" : "")} key={s.id}>
+                {reorder && (
+                  /* Poignée : touch-action none, sinon le glissé part en
+                     défilement de page avant d'arriver jusqu'ici. */
+                  <button className="cardgrip" aria-label={`Déplacer ${s.title}`}
+                    onPointerDown={(e) => onGripDown(e, s.id)}
+                    onPointerMove={onGripMove}
+                    onPointerUp={onGripUp}
+                    onPointerCancel={onGripUp}><i>⠿</i></button>
+                )}
+                <button className="cardmain" disabled={reorder} onClick={() => openFromList(s.id)}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <h3>{s.title}</h3>
                     <p>{s.artist || "Artiste inconnu"}</p>
@@ -4334,7 +4569,7 @@ export default function Carnet() {
                     quand la chanson porte un lien mémorisé pour le service
                     choisi — sinon la liste se couvrirait d'icônes inutiles
                     (la barre du haut, elle, propose toujours le lien). */}
-                {linked(s) && (
+                {linked(s) && !reorder && (
                   <a className="cardam" href={playLink(s)} target="_blank" rel="noopener noreferrer"
                     title={playTitle(s)}><PlayIcon service={player} /></a>
                 )}
@@ -4343,7 +4578,7 @@ export default function Carnet() {
             })}
           </div>
           </div>
-          {songs.length > 1 && (
+          {songs.length > 1 && !reorder && (
             <div className={"floatbar" + (libScrolled ? " hide" : "")}>
               <button className="btn" onClick={askPlay}
                 title="Enchaîner les chansons — au hasard en privilégiant les mieux connues, ou le vivier dans l'ordre"><i>🎹</i>Jouer</button>
