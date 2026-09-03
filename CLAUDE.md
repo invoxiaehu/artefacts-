@@ -117,13 +117,33 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   par le ⇅ de la ligne de filtre (jamais pour un artiste : un fait ne se
   range pas), travaille sur la **liste entière** — recherche et tags mis de
   côté, sinon l'ordre enregistré serait incomplet — et enregistre à chaque
-  lâcher, pas sur un bouton « Valider ». Le glissé est en **Pointer Events**
-  (un seul chemin doigt + souris, `setPointerCapture` garde le geste,
-  `touch-action:none` sur la poignée sans quoi il part en défilement) et la
-  carte au doigt n'est pas déplacée par une transformée : c'est la **liste
-  qui se réordonne sous elle**, ce qui supprime toute dérive entre le doigt
-  et le rendu. Une boucle `requestAnimationFrame` fait défiler quand le doigt
-  s'immobilise près d'un bord — sans elle, plus aucun `pointermove` n'arrive.
+  lâcher, pas sur un bouton « Valider ».
+- **Le glissé** (Pointer Events, un seul chemin doigt + souris ;
+  `touch-action:none` sur la poignée sans quoi le geste part en défilement) :
+  la carte portée **reste dans le flux** et s'en échappe par une transformée,
+  donc son emplacement continue de réserver sa hauteur et c'est lui qu'on voit
+  comme le trou — aucun clone, aucun `position:fixed` dans un conteneur qui
+  défile (capricieux sur Safari), aucune largeur à épingler. Trois points
+  gagnés à la sueur, à ne pas défaire :
+  1. la transformée n'est **jamais accumulée** : chaque frame recalcule « où
+     le doigt veut la carte » moins « où son emplacement est maintenant »
+     (`contentY(y) - grab - el.offsetTop`), si bien qu'une permutation ou un
+     défilement se corrigent d'eux-mêmes à la frame suivante — c'est là que
+     les implémentations dérivent ;
+  2. les écouteurs `pointermove`/`up` sont sur la **fenêtre**, pas sur la
+     poignée : réordonner la liste déplace la poignée dans le DOM et la
+     capture de pointeur ne survit pas toujours à ce déplacement (mesuré : la
+     carte décrochait de 80 px dès qu'on revenait en arrière) ;
+  3. une **seule boucle** `requestAnimationFrame` fait tout — défilement près
+     des bords (sans elle, un doigt immobile ne reçoit plus rien), replacement
+     de la carte, choix de l'emplacement d'insertion d'après le **centre de la
+     carte portée** ; elle ne lit que des refs (`rowsRef` mis à jour de façon
+     synchrone), donc jamais un état périmé.
+  Les voisines glissent en **FLIP** (positions mesurées avant permutation,
+  transformée inverse sans transition, relâchée à la frame suivante). Ces
+  styles étant écrits directement dans le DOM, `endReorder` les **balaie** :
+  sinon quitter le mode pendant une animation en vol laisse une carte décalée
+  pour de bon.
 - Le menu déroulant de la bibliothèque tient **deux zones** (`<optgroup>`) :
   les listes manuelles — avec « ＋ Nouvelle liste… » **dedans**, sinon elle
   serait introuvable sous quarante artistes — puis les **artistes du carnet**,
