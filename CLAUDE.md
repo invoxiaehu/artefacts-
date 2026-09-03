@@ -199,7 +199,11 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
      et 250 ms entre deux chansons suffisent (contre 3,5 s chez Apple).
      Des identifiants refusés (400/401 au jeton) sont mémorisés dans
      `spBadAuth` : un scan s'arrête au lieu de marteler.
-  2. Le lien de **piste** exact, collé à la main. Le bouton « Coller » du menu
+  2. Le lien de **piste** exact, collé à la main. Le bouton « Lier la piste »
+     du menu de la chanson — **seul** bouton de la ligne quand il n'y a ni
+     identifiants ni lien : pas de raccourci « Chercher » qui doublerait le
+     triangle vert de la barre du haut, et surtout un mode d'emploi caché
+     derrière « Coller » était invisible pour qui ne le connaissait pas déjà —
      ouvre une fenêtre qui porte toute la marche à suivre en cinq étapes
      numérotées — app requise, recherche, repérage, ⋯ → Partager → Copier le
      lien, retour et collage — avec le **lien de recherche dans la fenêtre**
