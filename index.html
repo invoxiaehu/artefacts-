@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Apps — Éric</title>
+  <meta name="description" content="Mes mini-applications : jeux et outils, à ouvrir dans le navigateur ou à installer sur l'écran d'accueil." />
+  <meta name="theme-color" content="#F5F6F9" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&amp;family=Archivo:wght@400;500&amp;family=JetBrains+Mono:wght@700&amp;display=swap" />
+  <style>
+    /* Palette reprise du thème clair du Carnet d'accords : gris très pâle,
+       panneaux blancs, cobalt en accent. Les voiles de l'accent passent par des
+       variables — jamais de rgba codé en dur ailleurs dans la feuille. */
+    :root { --bg:#F5F6F9; --panel:#FFFFFF; --panel2:#ECEEF4; --line:#D6DAE3;
+      --ink:#1D1F26; --muted:#6B7280; --acc:#2E5BD7;
+      --acc-soft:rgba(46,91,215,.10); --acc-faint:rgba(46,91,215,.06);
+      --sat:env(safe-area-inset-top, 0px); --sab:env(safe-area-inset-bottom, 0px); }
+    *, *::before, *::after { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--ink);
+      font-family:'Archivo', ui-sans-serif, system-ui, sans-serif;
+      -webkit-font-smoothing:antialiased;
+      padding:calc(28px + var(--sat)) 16px calc(36px + var(--sab)); }
+    main { width:100%; max-width:600px; margin:0 auto; }
+
+    header { padding-bottom:18px; margin-bottom:20px; border-bottom:1px solid var(--line); }
+    h1 { font-family:'Barlow Condensed', ui-sans-serif, system-ui, sans-serif; font-weight:700;
+      font-size:34px; letter-spacing:.1em; text-transform:uppercase; line-height:1;
+      margin:0 0 9px; }
+    h1 span { color:var(--acc); }
+    .sub { margin:0; font-size:13.5px; line-height:1.5; color:var(--muted); }
+
+    .count { font-family:'JetBrains Mono', ui-monospace, monospace; font-weight:700; font-size:10px;
+      letter-spacing:.16em; text-transform:uppercase; color:var(--muted); margin:0 0 10px; }
+
+    ul { list-style:none; margin:0; padding:0; }
+    li { margin-bottom:8px; }
+    /* Carte d'app : filet à gauche qui prend l'accent au survol, comme les
+       chansons du Carnet. */
+    li a { display:flex; align-items:center; gap:12px; padding:14px 15px; text-decoration:none;
+      color:inherit; background:var(--panel); border:1px solid var(--line);
+      border-left:3px solid var(--line); border-radius:10px;
+      transition:border-color .15s, background .15s; }
+    li a:hover, li a:focus-visible { border-left-color:var(--acc); background:var(--acc-faint); }
+    li a:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+    .txt { min-width:0; flex:1; }
+    .t, .d { display:block; }
+    .t { font-family:'Barlow Condensed', ui-sans-serif, system-ui, sans-serif; font-weight:600;
+      font-size:21px; letter-spacing:.03em; text-transform:uppercase; line-height:1.05; margin:0; }
+    .d { font-size:12.5px; line-height:1.5; color:var(--muted); margin:3px 0 0; }
+    .go { flex:0 0 auto; width:26px; height:26px; border-radius:7px; display:grid; place-items:center;
+      background:var(--panel2); color:var(--muted); font-size:13px; line-height:1;
+      transition:background .15s, color .15s; }
+    li a:hover .go, li a:focus-visible .go { background:var(--acc-soft); color:var(--acc); }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Apps <span>Éric</span></h1>
+      <p class="sub">Jeux et outils faits maison. À ouvrir ici, ou à installer sur l'écran d'accueil pour les avoir sous la main hors connexion.</p>
+    </header>
+    <p class="count">3 apps</p>
+    <ul>
+      <li>
+        <a href="./lemot/">
+          <span class="txt">
+            <span class="t">Le Mot</span>
+            <span class="d">Jeu de lettres quotidien en français — 5 ou 6 lettres, six essais, correction à la marge comme en dictée.</span>
+          </span>
+          <span class="go" aria-hidden="true">→</span>
+        </a>
+      </li>
+      <li>
+        <a href="./carnet-poesie/">
+          <span class="txt">
+            <span class="t">Carnet de poésie</span>
+            <span class="d">Carnet de poèmes à lire et à réciter — import depuis Wikisource (des milliers de textes du domaine public), révision vers à vers avec score d'apprentissage, listes et partage du carnet par URL.</span>
+          </span>
+          <span class="go" aria-hidden="true">→</span>
+        </a>
+      </li>
+      <li>
+        <a href="./carnet-accords/">
+          <span class="txt">
+            <span class="t">Carnet d'accords</span>
+            <span class="d">Carnet de grilles pour musiciens — import de PDF avec paroles et accords alignés, transposition, défilement automatique mains libres, partage du carnet complet par URL.</span>
+          </span>
+          <span class="go" aria-hidden="true">→</span>
+        </a>
+      </li>
+    </ul>
+  </main>
+</body>
+</html>

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <!-- maximum-scale=1 : iOS zoome toute l'interface au focus d'un champ dont la
+       police fait moins de 16 px — ce plafond désactive ce zoom automatique, et
+       sur l'écran d'accueil il désactive aussi le zoom de page au pincement.
+       C'est voulu : sur la chanson, le pincement à deux doigts est repris par
+       l'app pour régler la taille des paroles (le même réglage que A− / A+). -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>Carnet d'accords — grilles, transposition, défilement</title>
+  <meta name="description" content="Carnet de grilles d'accords : import de PDF (paroles et accords alignés), transposition, défilement automatique pour jouer les mains libres. Fonctionne sans connexion." />
+  <meta name="theme-color" content="#F5F6F9" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+  <link rel="icon" href="./icon-192.png" type="image/png" />
+  <!-- iOS : lancement plein écran depuis l'écran d'accueil. Barre d'état opaque
+       (« black ») et non « black-translucent » : la vue web se place SOUS elle, au
+       lieu de passer dessous et de laisser l'heure se dessiner sur l'en-tête.
+       `viewport-fit=cover` reste utile pour peindre jusqu'au bord inférieur ; les
+       marges de sécurité sont reprises dans le CSS (variables --sat/--sab/…). -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <meta name="apple-mobile-web-app-title" content="Carnet" />
+  <!-- Les polices sont chargées ici, et non par un @import dans le CSS injecté :
+       `crossorigin` rend la réponse non opaque, donc stockable par le service
+       worker pour les vols sans réseau. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" crossorigin
+    href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&amp;family=Archivo:wght@400;500;600&amp;family=JetBrains+Mono:wght@700&amp;display=swap" />
+  <style>
+    html, body { margin: 0; padding: 0; min-height: 100%; background: #F5F6F9; }
+    #root { position: fixed; inset: 0; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="./app.js?v=7695c24b"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+{
+ "version": "7695c24b",
+ "at": "2026-09-04T20:56:27.746Z",
+ "entries": [
+  {
+   "pr": 61,
+   "date": "2026-09-04",
+   "title": "Carnet : la mise à jour s'impose en popup, avec ce qu'elle apporte",
+   "detail": "Un bandeau qu'on peut écarter n'est jamais lu jusqu'au bout : la version en attente ouvre maintenant un popup qui barre la route, et n'a que deux sorties."
+  },
+  {
+   "pr": 60,
+   "date": "2026-09-04",
+   "title": "Carnet : bandeau de mise à jour sur l'accueil, deux portes sur un carnet vide",
+   "detail": "Une nouvelle version qui attend ne se voyait qu'au fond des Réglages. Elle se dit maintenant sur la page d'accueil, dans un bandeau posé au-dessus…"
+  },
+  {
+   "pr": 57,
+   "date": "2026-09-03",
+   "title": "Carnet : le rangement d'une liste devient un vrai glissé",
+   "detail": "La carte portée suit le doigt au pixel, laisse un trou à sa place, et les voisines s'écartent en glissant."
+  },
+  {
+   "pr": 56,
+   "date": "2026-09-03",
+   "title": "Carnet : ordre à la main des listes manuelles, au glissé",
+   "detail": "Une setlist a un ordre — celui du concert — et le carnet n'en tenait aucun."
+  },
+  {
+   "pr": 55,
+   "date": "2026-09-03",
+   "title": "Carnet : listes automatiques par artiste, et nom d'artiste tapable",
+   "detail": "Le menu déroulant de la bibliothèque tient maintenant deux zones : les listes qu'on constitue à la main, puis les artistes du carnet — des…"
+  },
+  {
+   "pr": 54,
+   "date": "2026-09-03",
+   "title": "Carnet : les Réglages expliquent l'état de la mise à jour, et la vérifient",
+   "detail": "* Carnet : la marche à suivre Spotify est derrière le bouton qu'on touche"
+  },
+  {
+   "pr": 53,
+   "date": "2026-09-03",
+   "title": "Carnet : la marche à suivre Spotify est derrière le bouton qu'on touche",
+   "detail": "Le mode d'emploi ajouté au commit précédent était inatteignable pour qui en avait besoin : il vivait derrière « Coller », c'est-à-dire derrière la…"
+  },
+  {
+   "pr": 52,
+   "date": "2026-09-03",
+   "title": "Carnet : la fenêtre de lien Spotify explique toute la marche à suivre",
+   "detail": "Le collage marche mais ne se devine pas. La fenêtre porte désormais les cinq étapes numérotées — app Spotify requise (sans elle le lien tombe dans…"
+  }
+ ]
+}
