@@ -179,6 +179,10 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
   if (request.mode === "navigate") { event.respondWith(navigate(request)); return; }
   const url = new URL(request.url);
+  // Les notes de version décrivent ce que le SERVEUR a de plus récent — c'est
+  // tout leur intérêt, puisque l'app qui les lit est encore l'ancienne. Elles
+  // ne passent donc ni par le cache ni par le worker : réseau, ou rien.
+  if (url.origin === self.location.origin && url.pathname.endsWith("/notes.json")) return;
   const mine = url.origin === self.location.origin
     ? url.pathname.startsWith(SCOPE)
     : FONT_HOSTS.includes(url.origin);

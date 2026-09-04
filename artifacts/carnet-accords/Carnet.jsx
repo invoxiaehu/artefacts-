@@ -822,6 +822,13 @@ const TAGS_KEY = "tags:v1";
 const normPart = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 const songKey = (song) => (song ? `${normPart(song.title)}|${normPart(song.artist)}` : "");
 
+/** « 2026-09-04 » → « 4 sept. ». Les notes de version portent une date ISO,
+ *  personne ne lit ça dans un popup. */
+const noteDate = (iso) => {
+  const d = new Date(iso + "T12:00:00");
+  return isNaN(d) ? iso : d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+};
+
 const TAG_COLORS = ["#E9B44C", "#7FB3D5", "#86C48B", "#C8503C", "#B98BD9", "#E08A5B"];
 const DEFAULT_TAGS = [
   { id: "piano", label: "Piano", icon: "🎹", color: "#7FB3D5" },
@@ -907,6 +914,51 @@ const backupJson = (songs, tags, lists, spAuth) =>
     songs: songs.map(({ id, ...rest }) => rest), tags, lists,
     ...(spAuth && spAuth.id && spAuth.secret ? { spAuth } : {}),
   }, null, 1);
+
+/** Enregistre le carnet dans un fichier daté, et rend de quoi en parler.
+ *
+ *  Sur iPhone, la feuille de partage d'un *fichier* propose « Enregistrer dans
+ *  Fichiers », donc iCloud Drive — et elle fonctionne depuis l'app installée, là
+ *  où un téléchargement classique est capricieux. Ailleurs, téléchargement.
+ *  Rien d'asynchrone avant navigator.share : le geste de l'utilisateur serait
+ *  perdu, donc cette fonction s'appelle DIRECTEMENT depuis le clic.
+ *
+ *  Nom daté et horodaté. Un nom fixe serait plus propre, mais iOS ne propose
+ *  pas de remplacer : il numérote en silence (« carnet-accords 2.json »), ce
+ *  qui donne une pile indiscernable. Avec la date et l'heure, la pile reste
+ *  chronologique et la dernière sauvegarde se reconnaît au premier coup d'œil.
+ *
+ *  Deux appelants — la page Transfert et le popup de mise à jour : d'où une
+ *  sortie neutre `{ ok, msg }` plutôt qu'un setState écrit ici. */
+function saveBackupFile(json) {
+  const d = new Date();
+  const p2 = (v) => String(v).padStart(2, "0");
+  const name = `carnet-accords-${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
+    + `-${p2(d.getHours())}${p2(d.getMinutes())}.json`;
+  const file = new File([json], name, { type: "application/json" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    return navigator.share({ files: [file], title: "Sauvegarde du Carnet d'accords" })
+      .then(() => ({ ok: true, msg: "Sauvegarde transmise à Fichiers." }))
+      // Annulation : l'utilisateur sait ce qu'il vient de faire, rien à lui dire.
+      .catch((e) => ({
+        ok: false,
+        msg: e && e.name === "AbortError" ? "" : "Partage refusé par le navigateur — réessayez, ou passez par l'URL de partage.",
+      }));
+  }
+  try {
+    const url = URL.createObjectURL(file);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    return Promise.resolve({ ok: true, msg: `Fichier enregistré : ${name}` });
+  } catch {
+    return Promise.resolve({ ok: false, msg: "Enregistrement impossible dans ce navigateur — passez par l'URL de partage." });
+  }
+}
 
 /** Identifiants venus d'une sauvegarde : deux chaînes plausibles, sinon
  *  rien. Bornées — un fichier bricolé ne remplit pas le stockage. */
@@ -1902,22 +1954,34 @@ const CSS = `
    resserrer, sinon le compteur se casse en deux lignes. Mesuré, pas deviné. */
 .seg2.tight button { padding:8px 8px; letter-spacing:.08em; }
 .count { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase; margin:0; }
-/* Bandeau de mise à jour, en tête de la vue bibliothèque : hors de la zone
-   qui défile, donc toujours sous les yeux tant qu'une version attend. */
-.upbar { flex:0 0 auto; display:flex; align-items:center; gap:10px;
-  padding:calc(9px + var(--sat)) 12px 9px 14px; background:var(--acc-soft);
-  border-bottom:1px solid var(--amber-dim); }
-.upbar .btn { flex:0 0 auto; }
-.upbartext { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
-.upbartext b { font-family:'Barlow Condensed'; font-weight:700; font-size:15px;
-  letter-spacing:.08em; text-transform:uppercase; color:var(--amber); line-height:1.1; }
-.upbartext span { font-size:11.5px; line-height:1.35; color:var(--muted); }
-.upbarclose { flex:0 0 auto; width:26px; height:26px; border-radius:7px; display:grid;
-  place-items:center; color:var(--muted); font-size:12px; line-height:1; }
-.upbarclose:hover { color:var(--ink); background:var(--acc-faint); }
-/* Le bandeau prend déjà la marge haute de l'encoche : la barre de titre qui le
-   suit ne doit pas la reprendre. */
-.upbar + .libscroll .top { padding-top:12px; }
+/* Popup de mise à jour : il barre la route, volontairement — une version qui
+   attend derrière un bandeau qu'on peut ignorer n'est jamais installée. Deux
+   sorties seulement, installer, ou sauvegarder puis installer. */
+.upnote { width:100%; text-align:left; }
+.upfold { width:100%; display:flex; align-items:center; gap:8px; padding:9px 2px;
+  border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+  font-family:'Barlow Condensed'; font-weight:700; font-size:13px;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+.upfold:hover { color:var(--amber); }
+.upfold i { font-style:normal; margin-left:auto; font-size:11px; }
+/* Même repli par grille 0fr/1fr que le reste de l'app : la hauteur du contenu
+   n'a pas à être connue d'avance. */
+.upwrap { width:100%; display:grid; grid-template-rows:1fr; opacity:1;
+  transition:grid-template-rows .28s ease, opacity .22s; }
+.upwrap.folded { grid-template-rows:0fr; opacity:0; }
+.uplist { overflow:hidden; }
+.upitem { padding:10px 2px; border-bottom:1px solid var(--line); text-align:left; }
+.upitem:last-child { border-bottom:none; }
+.upitem b { display:block; font-size:13.5px; font-weight:600; color:var(--ink); line-height:1.35; }
+.upitem p { margin:4px 0 0; font-size:12px; line-height:1.45; color:var(--muted); }
+.upmeta { font-family:'JetBrains Mono'; font-size:9.5px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--amber); }
+.upsaved { color:var(--ok); font-size:12.5px; line-height:1.45; }
+/* Encore le reset .cb button, plus spécifique que .btn : sans ça le bouton
+   secondaire du popup n'est plus qu'un mot posé sur le fond. */
+.modalbox .btn { background:var(--panel2); border:1px solid var(--line); }
+.modalbox .btn.primary { background:var(--amber); border-color:var(--amber); }
+.modalbox .btn.ghost { background:none; }
 .notice { position:relative; border:1px solid var(--amber-dim); background:var(--acc-faint); border-radius:10px;
   padding:11px 40px 11px 13px; font-size:13px; line-height:1.5; margin-bottom:12px; }
 .noticeclose { position:absolute; top:7px; right:7px; width:26px; height:26px; border-radius:7px; display:grid;
@@ -2659,41 +2723,9 @@ function Transfer({ library, tags, lists, spAuth, engine, backup, dirty, onImpor
     }
   };
 
-  /** Sur iPhone, la feuille de partage d'un *fichier* propose « Enregistrer dans
-   *  Fichiers », donc iCloud Drive — et elle fonctionne depuis l'app installée, là
-   *  où un téléchargement classique est capricieux. Ailleurs, téléchargement. Rien
-   *  d'asynchrone avant navigator.share : le geste de l'utilisateur serait perdu. */
-  /** Nom daté et horodaté. Un nom fixe serait plus propre, mais iOS ne propose
-   *  pas de remplacer : il numérote en silence (« carnet-accords 2.json »), ce
-   *  qui donne une pile indiscernable. Avec la date et l'heure, la pile reste
-   *  chronologique et la dernière sauvegarde se reconnaît au premier coup d'œil. */
   const saveFile = () => {
-    const d = new Date();
-    const p2 = (v) => String(v).padStart(2, "0");
-    const name = `carnet-accords-${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
-      + `-${p2(d.getHours())}${p2(d.getMinutes())}.json`;
-    const file = new File([json], name, { type: "application/json" });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      setFileMsg("");
-      navigator.share({ files: [file], title: "Sauvegarde du Carnet d'accords" })
-        .then(() => { onSaved(); setFileMsg("Sauvegarde transmise à Fichiers."); })
-        .catch((e) => { if (e && e.name !== "AbortError") setFileMsg("Partage refusé par le navigateur — réessayez, ou passez par l'URL de partage."); });
-      return;
-    }
-    try {
-      const url = URL.createObjectURL(file);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-      onSaved();
-      setFileMsg(`Fichier enregistré : ${name}`);
-    } catch {
-      setFileMsg("Enregistrement impossible dans ce navigateur — passez par l'URL de partage.");
-    }
+    setFileMsg("");
+    saveBackupFile(json).then((r) => { if (r.ok) onSaved(); setFileMsg(r.msg); });
   };
 
   const readFile = async (file) => {
@@ -2926,9 +2958,15 @@ export default function Carnet() {
   const searchRef = useRef(null);
   const syncHashRef = useRef(false);
   const [upCheck, setUpCheck] = useState(null); // recherche de mise à jour : null | "busy" | "found" | "none"
-  // Bandeau de mise à jour de l'accueil, écarté d'un ✕ : le refus vaut pour la
-  // session, pas au-delà — à la prochaine ouverture la version attend toujours.
-  const [upBarHidden, setUpBarHidden] = useState(false);
+  /* Popup de mise à jour. `upStep` : null | "saving" | "installing" — une seule
+     manœuvre à la fois, et les boutons disent où l'on en est. `upNotes` porte
+     les notes de version lues sur le serveur : null tant qu'on n'a rien
+     demandé, [] si elles manquent (déploiement plus ancien, ou hors ligne). */
+  const [upStep, setUpStep] = useState(null);
+  const [upMsg, setUpMsg] = useState("");
+  const [upNotes, setUpNotes] = useState(null);
+  const [upFold, setUpFold] = useState(false);
+  const [upSlow, setUpSlow] = useState(false); // installation qui traîne : proposer le rechargement
   // Réorganisation d'une liste manuelle : hors persistance, c'est un mode de
   // travail. dragRows tient l'ordre en cours (ids), dragId la carte au doigt.
   const [reorder, setReorder] = useState(false);
@@ -3014,7 +3052,8 @@ export default function Carnet() {
   // Sur iOS, aucune page web ne peut réécrire seule dans un fichier : la
   // sauvegarde reste un geste. À défaut de l'automatiser, l'app signale qu'elle
   // est due — point ambre sur ⇅, état détaillé dans la page Transfert.
-  const currentSig = useMemo(() => signature(backupJson(songs, tags, lists, spAuth)), [songs, tags, lists, spAuth]);
+  const backupText = useMemo(() => backupJson(songs, tags, lists, spAuth), [songs, tags, lists, spAuth]);
+  const currentSig = useMemo(() => signature(backupText), [backupText]);
   const dirty = ready && songs.length > 0 && (!backup || backup.sig !== currentSig);
   const markSaved = () => {
     const mark = { at: Date.now(), sig: currentSig };
@@ -4232,10 +4271,54 @@ export default function Carnet() {
   const cached = offline && offline.vendor && offline.vendor.total > 0 && offline.vendor.done >= offline.vendor.total;
   // Réseau : offline est null dans un aperçu d'artefact — considéré en ligne.
   const online = !offline || offline.online !== false;
-  /* Bandeau de l'accueil : une nouvelle version est téléchargée et n'attend
-     qu'un clic. Rien à demander au réseau ici — `waiting` est posé par le
-     service worker (main.jsx), qui cherche la mise à jour à chaque ouverture. */
-  const upBar = Boolean(offline && offline.supported && offline.waiting) && !upBarHidden;
+  /* Le popup de mise à jour. Il ne s'ouvre que sur la bibliothèque : une
+     chanson ouverte, c'est quelqu'un en train de jouer — on ne lui coupe pas
+     la feuille sous les doigts, il verra le popup en revenant à la liste.
+     `waiting` est posé par le service worker (main.jsx), qui cherche la mise à
+     jour à l'ouverture et au retour à l'écran. */
+  const upAsk = Boolean(offline && offline.supported && offline.waiting) && view === "lib";
+  /* Les notes viennent du serveur, jamais du bundle : celui qui pose la
+     question est l'ancien code, il ne peut pas porter la description de la
+     nouvelle version. `no-store` et le contournement du service worker
+     (sw.template.js) garantissent que c'est bien le fichier du déploiement en
+     attente qu'on lit. Absentes — déploiement plus ancien, ou hors ligne —, le
+     popup s'en passe. */
+  useEffect(() => {
+    if (!upAsk || upNotes) return;
+    let alive = true;
+    fetch("./notes.json?t=" + Date.now(), { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive) setUpNotes(d && Array.isArray(d.entries) ? d.entries.slice(0, 3) : []); })
+      .catch(() => { if (alive) setUpNotes([]); });
+    return () => { alive = false; };
+  }, [upAsk, upNotes]);
+  const upInstall = () => {
+    setUpStep("installing");
+    // Un préchargement du mode avion tient un waitUntil ouvert sur le worker
+    // actif, et l'activation attend qu'il retombe : le clic n'est pas perdu,
+    // il s'applique juste après. Passé huit secondes, on offre quand même la
+    // sortie de secours — un popup qui ne rend pas la main serait un piège.
+    setTimeout(() => setUpSlow(true), 8000);
+    window.offline.update();
+  };
+  /* L'autre porte : le carnet part d'abord dans un fichier, puis la version
+     s'installe. saveBackupFile est appelée DANS le clic — navigator.share perd
+     le geste de l'utilisateur si on l'attend. Sauvegarde annulée ou refusée :
+     on ne met rien à jour, le choix revient à l'utilisateur. */
+  const upSaveThenInstall = () => {
+    setUpMsg("");
+    setUpStep("saving");
+    saveBackupFile(backupText).then((r) => {
+      if (!r.ok) {
+        setUpStep(null);
+        setUpMsg(r.msg || "Sauvegarde annulée — rien n'a été installé.");
+        return;
+      }
+      markSaved();
+      setUpMsg(r.msg + " Installation…");
+      upInstall();
+    });
+  };
   const amMissing = songs.filter((s) => !s.am || s.am.none).length;
   const spMissing = songs.filter((s) => !s.sp || s.sp.none).length;
   /* Lecture : un seul point de passage pour les deux services, le réglage
@@ -4578,21 +4661,69 @@ export default function Carnet() {
 
       {view === "lib" && (
         <>
-          {/* Une version attend : ça se dit sur la page d'accueil, pas au fond
-              des Réglages — le bandeau est au-dessus de la zone qui défile,
-              donc il ne s'échappe pas vers le haut. Le ✕ l'écarte pour la
-              session ; la mise à jour, elle, reste en attente. */}
-          {upBar && (
-            <div className="upbar">
-              <div className="upbartext">
-                <b>Nouvelle version</b>
-                <span>{offline.warming
-                  ? "Prête : installation à la fin de la mise en cache."
-                  : "Prête à installer, sans réseau ni perte de données."}</span>
+          {/* Une version qui attend derrière un bandeau qu'on peut écarter n'est
+              jamais installée : le popup barre la route, et n'a que deux
+              sorties — installer, ou sauvegarder puis installer. */}
+          {upAsk && (
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Mise à jour disponible">
+              <div className="modalbox">
+                <div className="modalicon">🆕</div>
+                <h2>Mise à jour prête</h2>
+                <p>
+                  Elle est déjà téléchargée : l'installation prend une seconde,
+                  sans réseau, et ne touche pas à vos chansons.
+                </p>
+                {upNotes && upNotes.length > 0 && (
+                  <div className="upnote">
+                    <button className="upfold" aria-expanded={!upFold} onClick={() => setUpFold(!upFold)}>
+                      Ce qu'elle apporte <i>{upFold ? "▾" : "▴"}</i>
+                    </button>
+                    <div className={"upwrap" + (upFold ? " folded" : "")}>
+                      <div className="uplist">
+                        {/* Le détail complet pour la nouveauté, le titre seul pour
+                            les précédentes : un popup n'est pas un journal. */}
+                        {upNotes.map((n, i) => (
+                          <div className="upitem" key={i}>
+                            <span className="upmeta">{noteDate(n.date)}{n.pr ? ` · PR #${n.pr}` : ""}</span>
+                            <b>{n.title}</b>
+                            {i === 0 && n.detail ? <p>{n.detail}</p> : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {upMsg && <p className="upsaved">{upMsg}</p>}
+                {upStep === "installing" && offline.warming && (
+                  <p className="hint">
+                    La préparation du mode avion est en cours : l'installation s'appliquera
+                    dès qu'elle sera finie.
+                  </p>
+                )}
+                <div className="actions" style={{ flexDirection: "column", width: "100%" }}>
+                  <button className="btn primary" style={{ width: "100%" }} disabled={upStep !== null}
+                    onClick={upInstall}>
+                    {upStep === "installing" ? "Installation…" : upStep === "saving" ? "Sauvegarde…" : "Installer maintenant"}
+                  </button>
+                  {upStep === null && (
+                    <button className="btn" style={{ width: "100%" }} onClick={upSaveThenInstall}>
+                      Sauvegarder d'abord
+                    </button>
+                  )}
+                  {upSlow && (
+                    <button className="btn ghost" style={{ width: "100%" }}
+                      title="Recharger la page en contournant le cache du navigateur"
+                      onClick={() => reloadFresh(true)}>Ça traîne — recharger la page</button>
+                  )}
+                </div>
+                {upStep === null && (
+                  <p className="hint">
+                    {dirty ? "Le carnet a changé depuis votre dernière sauvegarde. " : ""}
+                    « Sauvegarder d'abord » écrit le carnet entier dans un fichier .json,
+                    puis installe.
+                  </p>
+                )}
               </div>
-              <button className="btn slim primary" onClick={() => window.offline.update()}>Installer</button>
-              <button className="upbarclose" title="Plus tard" aria-label="Plus tard"
-                onClick={() => setUpBarHidden(true)}>✕</button>
             </div>
           )}
           <div className="libscroll" ref={libScrollRef} onScroll={onLibScroll}>

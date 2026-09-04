@@ -18,6 +18,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Historique complet : le build en tire les notes de version montrées
+          # par le popup de mise à jour (messages des PR mergées). Un clone
+          # superficiel ne donnerait qu'un commit, donc aucune note.
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
