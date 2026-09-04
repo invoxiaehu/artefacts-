@@ -169,6 +169,19 @@ if (supported) {
       if (controlled) window.offline.refresh().then(warmIfNeeded);
     }).catch(() => emit({ supported: false }));
   });
+
+  // Une app posée sur l'écran d'accueil peut rester des jours en mémoire : la
+  // recherche de mise à jour de l'enregistrement n'aurait alors lieu qu'une
+  // fois, à la toute première ouverture. Au retour à l'écran, et pas plus
+  // d'une fois la demi-heure, on redemande au serveur — c'est ce qui allume
+  // le bandeau de l'accueil sans que l'utilisateur ait à tuer l'app.
+  let lastCheck = Date.now();
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (Date.now() - lastCheck < 1800000) return;
+    lastCheck = Date.now();
+    window.offline.check();
+  });
 }
 
 createRoot(document.getElementById("root")).render(<Carnet />);
