@@ -216,6 +216,22 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   rares dans ⚙. Contrôles contextuels flottants (pilule Vitesse visible
   seulement pendant le défilement).
 - Note affichée « vide » plutôt que zéro quand une chanson n'est pas notée.
+- **Mise à jour en attente : ça se dit sur l'accueil**, pas au fond des
+  Réglages. Bandeau `.upbar` **au-dessus** de `.libscroll` (hors de la zone
+  qui défile, donc jamais perdu de vue), titre + une phrase + « Installer » +
+  ✕ ; le ✕ vaut pour la session (`upBarHidden`), la version, elle, attend
+  toujours. Il ne dépend que de `offline.waiting`. Corollaire côté
+  `main.jsx` : une PWA de l'écran d'accueil peut vivre des jours sans être
+  tuée, donc la recherche de mise à jour est **redemandée au retour à
+  l'écran** (`visibilitychange`, une fois la demi-heure au plus) — sans ça le
+  bandeau ne s'allumerait qu'au tout premier chargement.
+- **Carnet vide : deux portes, jamais une.** Un bloc `.start` « Une chanson »
+  (PDF / ChordPro, ou Saisir) et un bloc « Un carnet entier » (le fichier
+  `.json` de sauvegarde, `importBackup` → `importLibrary` : mêmes fusions que
+  « Restaurer un fichier… » de la page Transfert, tags et listes compris). Un
+  seul bouton « Importer » laissait croire que la sauvegarde passait par là.
+  Les boutons secondaires de ces blocs réécrivent fond et bordure
+  (`.start .btn`) — même piège de spécificité que `.floatbar .btn`.
 - Glyphes typographiques dans la barre d'emoji : `‹` et `♯` n'occupent qu'un
   tiers de leur cadratin, on les remonte (`.iconbtn.glyph.back/.sharp`) pour
   qu'ils pèsent autant que 🎓 ou 🎼 — mesurer, ne pas se fier au `font-size`.

@@ -1902,6 +1902,22 @@ const CSS = `
    resserrer, sinon le compteur se casse en deux lignes. Mesuré, pas deviné. */
 .seg2.tight button { padding:8px 8px; letter-spacing:.08em; }
 .count { font-family:'JetBrains Mono'; font-size:10px; letter-spacing:.16em; color:var(--muted); text-transform:uppercase; margin:0; }
+/* Bandeau de mise à jour, en tête de la vue bibliothèque : hors de la zone
+   qui défile, donc toujours sous les yeux tant qu'une version attend. */
+.upbar { flex:0 0 auto; display:flex; align-items:center; gap:10px;
+  padding:calc(9px + var(--sat)) 12px 9px 14px; background:var(--acc-soft);
+  border-bottom:1px solid var(--amber-dim); }
+.upbar .btn { flex:0 0 auto; }
+.upbartext { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.upbartext b { font-family:'Barlow Condensed'; font-weight:700; font-size:15px;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--amber); line-height:1.1; }
+.upbartext span { font-size:11.5px; line-height:1.35; color:var(--muted); }
+.upbarclose { flex:0 0 auto; width:26px; height:26px; border-radius:7px; display:grid;
+  place-items:center; color:var(--muted); font-size:12px; line-height:1; }
+.upbarclose:hover { color:var(--ink); background:var(--acc-faint); }
+/* Le bandeau prend déjà la marge haute de l'encoche : la barre de titre qui le
+   suit ne doit pas la reprendre. */
+.upbar + .libscroll .top { padding-top:12px; }
 .notice { position:relative; border:1px solid var(--amber-dim); background:var(--acc-faint); border-radius:10px;
   padding:11px 40px 11px 13px; font-size:13px; line-height:1.5; margin-bottom:12px; }
 .noticeclose { position:absolute; top:7px; right:7px; width:26px; height:26px; border-radius:7px; display:grid;
@@ -1977,8 +1993,22 @@ const CSS = `
 .swatch.on { box-shadow:0 0 0 2px var(--bg), 0 0 0 4px var(--ink); }
 .tag.full { color:var(--amber); border-color:var(--amber-dim); }
 .empty { text-align:center; padding:44px 20px; color:var(--muted); }
+.empty.start2 { padding-top:24px; }
 .empty h2 { font-family:'Barlow Condensed'; text-transform:uppercase; letter-spacing:.1em; color:var(--ink); font-size:22px; margin:0 0 8px; }
 .empty p { margin:0 0 20px; font-size:14px; line-height:1.5; }
+/* Carnet vide : deux blocs encadrés, une chanson d'un côté, un carnet entier
+   de l'autre. L'encadré est ce qui dit qu'il s'agit de deux gestes distincts —
+   deux rangées de boutons à la suite se liraient comme un seul choix. */
+.start { border:1px solid var(--line); border-radius:12px; background:var(--panel);
+  padding:16px 14px 14px; margin-top:14px; text-align:center; }
+.start h3 { margin:0 0 6px; font-family:'Barlow Condensed'; font-weight:600; font-size:17px;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--ink); line-height:1.1; }
+.start p { margin:0 0 14px; font-size:13px; line-height:1.5; }
+.start b { color:var(--ink); font-weight:600; }
+/* Le reset .cb button est plus spécifique que .btn : sans ces deux lignes, le
+   bouton secondaire du bloc perd fond et bordure et se lit comme du texte. */
+.start .btn { background:var(--panel2); border:1px solid var(--line); }
+.start .btn.primary { background:var(--amber); border-color:var(--amber); }
 .head { position:relative; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--panel); flex:0 0 auto; }
 .title { font-family:'Barlow Condensed'; font-weight:700; font-size:26px; line-height:1; letter-spacing:.02em; text-transform:uppercase; margin:0; padding-right:40px; }
 .foldbtn { position:absolute; top:11px; right:14px; width:30px; height:30px; border-radius:8px; border:1px solid var(--line);
@@ -2892,9 +2922,13 @@ export default function Carnet() {
   const scrollPctRef = useRef(null); // dernière valeur poussée — un setState par point de %, pas par frame
   const sheetRef = useRef(null);
   const fileRef = useRef(null);
+  const jsonRef = useRef(null); // sélecteur dédié au fichier de sauvegarde (.json)
   const searchRef = useRef(null);
   const syncHashRef = useRef(false);
   const [upCheck, setUpCheck] = useState(null); // recherche de mise à jour : null | "busy" | "found" | "none"
+  // Bandeau de mise à jour de l'accueil, écarté d'un ✕ : le refus vaut pour la
+  // session, pas au-delà — à la prochaine ouverture la version attend toujours.
+  const [upBarHidden, setUpBarHidden] = useState(false);
   // Réorganisation d'une liste manuelle : hors persistance, c'est un mode de
   // travail. dragRows tient l'ordre en cours (ids), dragId la carte au doigt.
   const [reorder, setReorder] = useState(false);
@@ -3936,6 +3970,42 @@ export default function Carnet() {
       if (settings.sort === "title" || settings.sort === "artist" || settings.sort === "memo") setSort(settings.sort);
     }
   };
+  /* Restauration d'un carnet entier depuis un fichier de sauvegarde (.json).
+     Même chemin que « Restaurer un fichier… » de la page Transfert — c'est
+     importLibrary qui fusionne —, mais accessible là où on en a besoin : sur
+     un carnet vide, où la page Transfert est justement ce qu'on ne connaît
+     pas encore. Un fichier contenant une URL de partage est accepté aussi :
+     refuser un carnet lisible pour son enveloppe serait gratuit. */
+  const importBackup = async (file) => {
+    if (!file) return;
+    setReport([]);
+    setStatus("Lecture de la sauvegarde…");
+    try {
+      const raw = (await file.text()).trim();
+      let lib, addedTags = null, addedLists = null, addedAuth = null;
+      if (/^[[{]/.test(raw)) {
+        const parsed = JSON.parse(raw);
+        lib = normalizeLibrary(parsed);
+        addedTags = normalizeTags(parsed && parsed.tags);
+        addedLists = normalizeLists(parsed && parsed.lists);
+        addedAuth = normalizeSpAuth(parsed && parsed.spAuth);
+      } else {
+        const data = extractShareData(raw);
+        if (!data) throw new Error("ce fichier n'est ni un JSON ni une URL de partage");
+        lib = await decodeShareData(data);
+        addedLists = lib.lists || null; // les listes voyagent dans l'URL, les tags non
+      }
+      if (!lib.songs.length) throw new Error("aucune chanson dans ce fichier");
+      importLibrary(lib.songs, lib, addedTags, addedLists, addedAuth);
+      const nTags = addedTags ? addedTags.defs.length : 0;
+      const nLists = addedLists ? addedLists.defs.length : 0;
+      setStatus(`${lib.songs.length} chanson(s) reprise(s) de ${file.name}`
+        + (nTags ? `, ${nTags} tag(s)` : "") + (nLists ? `, ${nLists} liste(s)` : "") + ".");
+    } catch (e) {
+      setStatus("Sauvegarde illisible : " + String((e && e.message) || e).slice(0, 140)
+        + ". Attendu : un fichier .json enregistré par le carnet (page Transfert ⇅ → Enregistrer).");
+    }
+  };
   const library = useMemo(() => ({ songs, showChords, size, speed, sort }), [songs, showChords, size, speed, sort]);
   const shift = (n) => setSongs(songs.map((s) => (s.id === current.id ? { ...s, steps: Math.max(-6, Math.min(6, (s.steps || 0) + n)) } : s)));
   // Réglage manuel : il reprend la main sur le scoring automatique, dont le
@@ -4162,6 +4232,10 @@ export default function Carnet() {
   const cached = offline && offline.vendor && offline.vendor.total > 0 && offline.vendor.done >= offline.vendor.total;
   // Réseau : offline est null dans un aperçu d'artefact — considéré en ligne.
   const online = !offline || offline.online !== false;
+  /* Bandeau de l'accueil : une nouvelle version est téléchargée et n'attend
+     qu'un clic. Rien à demander au réseau ici — `waiting` est posé par le
+     service worker (main.jsx), qui cherche la mise à jour à chaque ouverture. */
+  const upBar = Boolean(offline && offline.supported && offline.waiting) && !upBarHidden;
   const amMissing = songs.filter((s) => !s.am || s.am.none).length;
   const spMissing = songs.filter((s) => !s.sp || s.sp.none).length;
   /* Lecture : un seul point de passage pour les deux services, le réglage
@@ -4494,11 +4568,33 @@ export default function Carnet() {
       <input ref={fileRef} type="file" multiple
         className="vhide" tabIndex={-1} aria-hidden="true"
         onChange={(e) => { importFiles(e.target.files); e.target.value = ""; }} />
+      {/* Le fichier de sauvegarde, lui, a bien un type déclaré au système :
+          accept trie les .json au lieu d'offrir tout l'appareil. */}
+      <input ref={jsonRef} type="file" accept=".json,application/json"
+        className="vhide" tabIndex={-1} aria-hidden="true"
+        onChange={(e) => { importBackup(e.target.files && e.target.files[0]); e.target.value = ""; }} />
 
       {view !== "lib" && topbar}
 
       {view === "lib" && (
         <>
+          {/* Une version attend : ça se dit sur la page d'accueil, pas au fond
+              des Réglages — le bandeau est au-dessus de la zone qui défile,
+              donc il ne s'échappe pas vers le haut. Le ✕ l'écarte pour la
+              session ; la mise à jour, elle, reste en attente. */}
+          {upBar && (
+            <div className="upbar">
+              <div className="upbartext">
+                <b>Nouvelle version</b>
+                <span>{offline.warming
+                  ? "Prête : installation à la fin de la mise en cache."
+                  : "Prête à installer, sans réseau ni perte de données."}</span>
+              </div>
+              <button className="btn slim primary" onClick={() => window.offline.update()}>Installer</button>
+              <button className="upbarclose" title="Plus tard" aria-label="Plus tard"
+                onClick={() => setUpBarHidden(true)}>✕</button>
+            </div>
+          )}
           <div className="libscroll" ref={libScrollRef} onScroll={onLibScroll}>
           {topbar}
           {/* En-tête figé : recherche, liste + tags sur une ligne, tri et
@@ -4640,17 +4736,33 @@ export default function Carnet() {
             )}
             {!ready && <p className="hint">Chargement…</p>}
             {ready && songs.length === 0 && (
-              <div className="empty">
+              <div className="empty start2">
                 <h2>Carnet vide</h2>
-                <p>Importez vos grilles en PDF ou en ChordPro (.pro) : paroles et<br />accords sont extraits et alignés automatiquement.</p>
-                <div className="actions" style={{ justifyContent: "center" }}>
-                  <button className="btn primary" onClick={() => fileRef.current?.click()}>Importer</button>
-                  <button className="btn" onClick={startNew}>Saisir</button>
+                {/* Deux portes, et pas la même : une chanson à la fois, ou le
+                    carnet entier d'un autre appareil. « Importer » tout court
+                    laissait croire que le fichier de sauvegarde passait par
+                    là — d'où le nom de chaque geste, et sa phrase. */}
+                <div className="start">
+                  <h3>Une chanson</h3>
+                  <p><b>Un fichier par chanson</b> : une grille en PDF ou en ChordPro (.pro),
+                    dont les paroles et les accords sont extraits et alignés. Ou tapez-la à la main.</p>
+                  <div className="actions" style={{ justifyContent: "center" }}>
+                    <button className="btn primary" onClick={() => fileRef.current?.click()}>Ajouter une chanson</button>
+                    <button className="btn" onClick={startNew}>Saisir</button>
+                  </div>
                 </div>
-                <p className="hint" style={{ marginTop: 14 }}>
-                  Un carnet existe déjà ailleurs ? La page Transfert (⇅) le rapatrie depuis une URL
-                  de partage, un code compressé ou un export JSON. Une app installée sur l'écran
-                  d'accueil a son propre stockage : le carnet du navigateur n'y est pas repris.
+                <div className="start">
+                  <h3>Un carnet entier</h3>
+                  <p><b>Un fichier pour tout le carnet</b> : le .json enregistré sur un autre
+                    appareil, avec ses chansons, ses tags et ses listes.</p>
+                  <div className="actions" style={{ justifyContent: "center" }}>
+                    <button className="btn" onClick={() => jsonRef.current?.click()}>Importer un carnet</button>
+                  </div>
+                </div>
+                <p className="hint" style={{ marginTop: 16 }}>
+                  Le carnet vous arrive par une URL de partage ou un code ? C'est la page
+                  Transfert (⇅) qui le rapatrie. Une app installée sur l'écran d'accueil a son
+                  propre stockage : le carnet du navigateur n'y est pas repris.
                 </p>
               </div>
             )}
