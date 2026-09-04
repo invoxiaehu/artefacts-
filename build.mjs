@@ -8,6 +8,7 @@
 import { build } from "esbuild";
 import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { versesIcon, vuIcon } from "./build/png.mjs";
 
@@ -66,12 +67,95 @@ for (const name of names) {
   console.log(`✓ artefact « ${name} » → ${out}/ (v=${v})`);
 
   const pwa = await readJson(path.join(dir, "pwa.json"));
-  if (pwa) await buildPwa({ slug: name, dir, out, pwa, appVersion: v });
+  if (pwa) {
+    await buildPwa({ slug: name, dir, out, pwa, appVersion: v });
+    await buildNotes({ dir, out, appVersion: v });
+  }
 }
 
 console.log("Build terminé → dist/");
 
+
 /* ------------------------------------------------------------------ */
+
+/** Notes de version : ce que le popup de mise à jour montre AVANT d'installer.
+ *
+ *  L'app qui tourne est l'ancienne — elle ne peut donc pas porter en elle la
+ *  description de la nouvelle. Elle va la chercher sur le serveur, dans ce
+ *  fichier, écrit à côté de app.js à chaque déploiement (le service worker ne
+ *  le met jamais en cache, voir sw.template.js).
+ *
+ *  La source, ce sont les messages de PR mergées, tels quels : un merge laisse
+ *  un commit « Merge pull request #N … » dont le message détaillé vit sur le
+ *  second parent ; un squash laisse un commit « Titre (#N) » qui porte déjà
+ *  tout. Les deux formes sont lues ici. L'historique est filtré sur le dossier
+ *  de l'artefact : le carnet ne raconte pas les évolutions du carnet de poésie.
+ *
+ *  Sans historique — clone superficiel, dossier hors dépôt —, pas de fichier :
+ *  le popup s'en passe et n'affiche simplement pas de notes. */
+async function buildNotes({ dir, out, appVersion }) {
+  const git = (args) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  let raw;
+  try {
+    raw = git(["log", "--first-parent", "-n", "25", "--date=short",
+      `--format=%H%x1f%ad%x1f%s%x1f%b%x1e`, "--", dir]);
+  } catch {
+    console.log("  ↳ notes de version : historique git indisponible, ignorées");
+    return;
+  }
+  const entries = [];
+  for (const record of raw.split("\x1e")) {
+    const [sha, date, subject, body] = record.replace(/^\n/, "").split("\x1f");
+    if (!sha || !subject) continue;
+    let title = subject;
+    let text = body || "";
+    let pr = null;
+    const merged = /^Merge pull request #(\d+)/.exec(subject);
+    if (merged) {
+      pr = Number(merged[1]);
+      // Le corps du commit de merge ne porte que le titre de la PR ; le message
+      // écrit sur la branche, lui, est sur le second parent.
+      title = (text.split("\n")[0] || "").trim();
+      text = "";
+      try {
+        const branch = git(["log", "-1", `--format=%s%x1f%b`, `${sha}^2`]);
+        const [bs, bb] = branch.split("\x1f");
+        if (bs && bs.trim()) title = bs.trim();
+        text = bb || "";
+      } catch { /* second parent absent (clone partiel) : le titre suffit */ }
+    } else {
+      const squashed = /\s\(#(\d+)\)\s*$/.exec(subject);
+      if (squashed) {
+        pr = Number(squashed[1]);
+        title = subject.slice(0, squashed.index).trim();
+      }
+    }
+    if (!title) continue;
+    entries.push({ pr, date, title, detail: firstParagraph(text) });
+    if (entries.length >= 8) break;
+  }
+  if (!entries.length) return;
+  await writeFile(path.join(out, "notes.json"),
+    JSON.stringify({ version: appVersion, at: new Date().toISOString(), entries }, null, 1));
+  console.log(`  ↳ notes de version : ${entries.length} entrée(s), dernière « ${entries[0].title.slice(0, 46)}… »`);
+}
+
+/** Le premier paragraphe d'un message de commit, replié sur une ligne : de quoi
+ *  dire ce que la version apporte sans déverser trente lignes dans un popup.
+ *  Les lignes de fin (Co-Authored-By, Claude-Session…) n'ont rien à y faire. */
+function firstParagraph(body) {
+  const para = String(body || "")
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter((p) => p && !/^[\w-]+:\s*\S+$/.test(p.split("\n")[0]))[0] || "";
+  const line = para.replace(/\s+/g, " ").trim();
+  if (line.length <= 150) return line;
+  // Couper à la fin d'une phrase quand il y en a une : « … dans un bandeau posé
+  // au-dessus de la zone qui défile. » se lit, « … posé au-… » non.
+  const stop = line.slice(0, 160).lastIndexOf(". ");
+  if (stop > 70) return line.slice(0, stop + 1);
+  return line.slice(0, 149).replace(/\s\S*$/, "") + "…";
+}
 
 async function readJson(file) {
   try {

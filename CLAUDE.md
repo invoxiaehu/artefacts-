@@ -14,7 +14,10 @@ d'accueil, 375 px de large) : toute décision d'UI se juge d'abord là.
 - `site/index.html` : page d'accueil — tout nouvel artefact doit y être référencé à la main.
 - `build.mjs` (`npm run build`) : esbuild bundle chaque artefact vers
   `dist/<slug>/app.js` (iife, minifié) et réécrit `index.html` avec
-  `app.js?v=<sha256[0:8]>` (cache-busting).
+  `app.js?v=<sha256[0:8]>` (cache-busting). Pour un artefact PWA, il écrit
+  aussi `notes.json` (`buildNotes`) : les derniers messages de PR mergées
+  touchant `artifacts/<slug>/`, que le popup de mise à jour va lire sur le
+  serveur avant d'installer.
 - Déploiement : push sur `main` → workflow `deploy.yml` → `npm ci && npm run build`
   → **force-push de `dist/` sur la branche `gh-pages`**. Propagation : 1 à 4 minutes.
 - La skill locale `ajouter-artefact` décrit la publication d'un nouvel artefact.
@@ -216,15 +219,33 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   rares dans ⚙. Contrôles contextuels flottants (pilule Vitesse visible
   seulement pendant le défilement).
 - Note affichée « vide » plutôt que zéro quand une chanson n'est pas notée.
-- **Mise à jour en attente : ça se dit sur l'accueil**, pas au fond des
-  Réglages. Bandeau `.upbar` **au-dessus** de `.libscroll` (hors de la zone
-  qui défile, donc jamais perdu de vue), titre + une phrase + « Installer » +
-  ✕ ; le ✕ vaut pour la session (`upBarHidden`), la version, elle, attend
-  toujours. Il ne dépend que de `offline.waiting`. Corollaire côté
-  `main.jsx` : une PWA de l'écran d'accueil peut vivre des jours sans être
-  tuée, donc la recherche de mise à jour est **redemandée au retour à
-  l'écran** (`visibilitychange`, une fois la demi-heure au plus) — sans ça le
-  bandeau ne s'allumerait qu'au tout premier chargement.
+- **Mise à jour en attente : un popup qui barre la route** (`upAsk`), pas un
+  bandeau qu'on écarte — une version qu'on peut ignorer n'est jamais
+  installée. Deux sorties, aucune fuite : « Installer maintenant », ou
+  « Sauvegarder d'abord » (le carnet part dans un fichier `.json`, puis
+  l'installation s'enchaîne toute seule ; sauvegarde annulée = rien
+  n'est installé). Il ne s'ouvre **que sur la bibliothèque** : une chanson
+  ouverte, c'est quelqu'un en train de jouer. Passé 8 s sans reprise de main
+  (un préchargement du mode avion retient l'activation), le popup offre le
+  rechargement forcé — un popup sans issue serait un piège. `saveBackupFile`
+  est une fonction de module partagée avec la page Transfert, appelée
+  **dans le clic** (`navigator.share` perd le geste si on l'attend).
+  Corollaire côté `main.jsx` : une PWA de l'écran d'accueil peut vivre des
+  jours sans être tuée, donc la recherche de mise à jour est **redemandée au
+  retour à l'écran** (`visibilitychange`, une fois la demi-heure au plus) —
+  sans ça le popup ne s'ouvrirait qu'au tout premier chargement.
+- **Ce qu'apporte la version, dans un dépliant du popup.** L'app qui pose la
+  question est l'**ancienne** : elle ne peut pas porter la description de la
+  nouvelle, elle va donc lire `./notes.json` sur le serveur (`no-store`, et
+  le service worker laisse passer ce chemin sans le cacher — sinon on
+  relirait les notes de la version déjà installée). Écrit au build par
+  `buildNotes` depuis l'historique git **du dossier de l'artefact** : un
+  merge de PR laisse « Merge pull request #N », dont le message détaillé vit
+  sur le second parent (`<sha>^2`) ; un squash laisse « Titre (#N) » qui
+  porte déjà tout. Les deux formes sont lues. D'où `fetch-depth: 0` dans
+  `deploy.yml` — un clone superficiel ne donne aucun historique, donc aucune
+  note (et le popup s'en passe). Détail complet pour la nouveauté, titre seul
+  pour les précédentes : un popup n'est pas un journal.
 - **Carnet vide : deux portes, jamais une.** Un bloc `.start` « Une chanson »
   (PDF / ChordPro, ou Saisir) et un bloc « Un carnet entier » (le fichier
   `.json` de sauvegarde, `importBackup` → `importLibrary` : mêmes fusions que
