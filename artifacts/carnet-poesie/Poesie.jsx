@@ -50,15 +50,18 @@ const notAVerse = (raw) => {
 };
 
 /** Un vers = une unité de révision. byBlock[i] = unité du bloc i, ou null
- *  quand le bloc ne se masque pas (blanc, repère, didascalie). */
+ *  quand le bloc ne se masque pas (blanc, repère, didascalie). keys[u] =
+ *  l'empreinte de l'unité u, qui ancre sa mémoire (voir lineKey). */
 function reviseUnitsOf(blocks) {
   const byBlock = new Array(blocks.length).fill(null);
+  const keys = [];
   let count = 0;
   blocks.forEach((b, i) => {
     if (b.type !== "line" || notAVerse(b.text)) return;
     byBlock[i] = count++;
+    keys.push(lineKey(b.text));
   });
-  return { byBlock, count };
+  return { byBlock, count, keys };
 }
 
 /* ------------------------------------------------------------------ */
@@ -143,6 +146,10 @@ function normalizeLibrary(data) {
       // public, mais la transcription est sous CC BY-SA — la source suit
       // donc le poème partout, URL de partage comprise.
       ...(s.source ? { source: String(s.source).slice(0, 300) } : {}),
+      // Mémoire vers à vers : elle voyage par la sauvegarde en fichier,
+      // jamais par l'URL de partage — c'est votre apprentissage, pas une
+      // propriété du recueil (même sort que les tags).
+      ...(linesNorm(s.lines) ? { lines: linesNorm(s.lines) } : {}),
     }));
   if (!poems.length) throw new Error("aucun poème exploitable");
   const lib = { poems };
@@ -160,7 +167,10 @@ async function encodeShare(library, lists) {
     throw new Error("CompressionStream indisponible dans ce navigateur");
   }
   const json = JSON.stringify({
-    poems: library.poems.map(({ id, ...rest }) => rest),
+    // La mémoire vers à vers (lines) reste sur l'appareil : le recueil
+    // qu'on donne à un ami n'arrive pas avec les ratés de son auteur — et
+    // des empreintes ne se compressent pas. Elle voyage par la sauvegarde.
+    poems: library.poems.map(({ id, lines, ...rest }) => rest),
     size: library.size,
     speed: library.speed,
     sort: library.sort,
@@ -404,7 +414,16 @@ async function saveLists(l) {
 const fmtBytes = (n) => (n < 1024 ? `${n} o` : `${(n / 1024).toFixed(1)} Ko`);
 const mergeByTitle = (prev, added) => {
   const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-  return [...prev.filter((s) => !added.some((a) => norm(a.title) === norm(s.title))), ...added];
+  // La mémoire vers à vers de l'appareil survit à ce qui arrive de
+  // l'extérieur : l'URL de partage ne la transporte pas, et réimporter un
+  // poème déjà travaillé n'a aucune raison d'effacer des semaines de
+  // révision. Ce que le nouveau venu apporte (une sauvegarde) prime.
+  const kept = new Map();
+  for (const s of prev) if (s.lines) kept.set(norm(s.title), s.lines);
+  return [
+    ...prev.filter((s) => !added.some((a) => norm(a.title) === norm(s.title))),
+    ...added.map((a) => (a.lines || !kept.has(norm(a.title)) ? a : { ...a, lines: kept.get(norm(a.title)) })),
+  ];
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -421,14 +440,84 @@ const AUTHOR_PREFIX = "author:";
 const fmtMemo = (m) => (Math.round(Number(m) * 10) / 10).toFixed(1).replace(/\.0$/, "").replace(".", ",");
 /** Jamais 0 (qui supprimerait la clé memo), jamais plus d'une décimale. */
 const clampMemo = (m) => Math.min(5, Math.max(0.1, Math.round(m * 10) / 10));
-/** Un pas de score : moyenne mobile exponentielle vers 5 (« savais ») ou 0
- *  (« savais pas »). α dépend du nombre de vers du poème pour qu'une session
- *  complète pèse ~50 % du score, court ou long — et qu'une seule réponse de
- *  révision au hasard pèse « un vers de ce poème ». */
-const emaStep = (memo, known, units) => {
-  const a = Math.min(0.5, Math.max(0.03, 1 - 0.5 ** (1 / Math.max(1, units))));
-  const base = Number(memo) > 0 ? Number(memo) : 2.5;
-  return base + a * ((known ? 5 : 0) - base);
+
+/* ------------------------------------------------------------------ */
+/* Mémoire vers à vers                                                 */
+/*                                                                     */
+/* Le score d'un poème n'est pas une impression d'ensemble : c'est la  */
+/* moyenne de ses vers, chacun se souvenant de la dernière fois qu'on  */
+/* le lui a demandé. De là viennent aussi le marqueur de la page       */
+/* (« celui-ci vous a échappé ») et le tirage de la révision au        */
+/* hasard. Repris tel quel du carnet d'accords : une correction ici    */
+/* vaut probablement là-bas.                                           */
+/* ------------------------------------------------------------------ */
+
+/** Empreinte d'un vers : son texte réduit aux lettres et chiffres (casse,
+ *  accents, ponctuation et retraits mis de côté), puis FNV-1a en base 36.
+ *  C'est elle, et non le rang du vers, qui ancre le score — même doctrine
+ *  que poemKey pour les tags : réimporter le poème d'une autre édition ou
+ *  corriger une coquille ailleurs n'efface pas des semaines de révision. */
+const lineKey = (text) => {
+  const s = String(text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (!s) return null;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(36);
+};
+/** Le milieu de l'échelle : ni su, ni raté. */
+const LINE_MID = 2.5;
+/** Un vers est « su » au-dessus du milieu. Comme un pas fait la moitié du
+ *  chemin, cela revient à dire : vous l'aviez la dernière fois. */
+const lineKnown = (v) => Number(v) > LINE_MID;
+/** La mémoire d'un poème : { b, m }. m = les vers mesurés (empreinte →
+ *  score 0–5) ; b = le socle, ce que valent les vers jamais demandés — le
+ *  score qu'avait le poème quand sa mémoire a commencé, ou la note posée à
+ *  la main depuis. Sans ce socle, réviser trois vers sur quarante
+ *  prétendrait juger les trente-sept autres. */
+const linesOf = (poem) => (poem && poem.lines && poem.lines.m
+  ? poem.lines
+  : { b: poem && Number(poem.memo) > 0 ? Number(poem.memo) : LINE_MID, m: {} });
+/** Un pas de vers : la moitié du chemin vers 5 (« savais ») ou 0 (« savais
+ *  pas »). Une décimale suffit — c'est déjà plus fin que ce qui s'affiche. */
+const lineStep = (v, base, known) => {
+  const from = v == null ? base : Number(v);
+  return Math.round((from + 0.5 * ((known ? 5 : 0) - from)) * 10) / 10;
+};
+/** Le score du poème : la moyenne de ses vers, les non mesurés au socle.
+ *  Une session complète le déplace de moitié, exactement comme l'EMA
+ *  globale d'avant — mais une session partielle ne ment plus. */
+const scoreFromLines = (lines, keys) => {
+  if (!keys.length) return lines.b;
+  let sum = 0;
+  for (const k of keys) sum += k != null && lines.m[k] != null ? lines.m[k] : lines.b;
+  return sum / keys.length;
+};
+/** Mémoire venue de l'extérieur : empreintes courtes, scores 0–5. Comme
+ *  tout champ de poème, elle doit traverser normalizeLibrary sans se
+ *  perdre — mais rien n'oblige à la croire sur parole. */
+const linesNorm = (v) => {
+  if (!v || typeof v !== "object" || !v.m || typeof v.m !== "object") return null;
+  const m = {};
+  let n = 0;
+  for (const [k, val] of Object.entries(v.m)) {
+    if (!/^[a-z0-9]{1,8}$/.test(k) || !(Number(val) >= 0)) continue;
+    m[k] = Math.min(5, Math.round(Number(val) * 10) / 10);
+    if (++n >= 4000) break;
+  }
+  if (!n) return null;
+  const b = Number(v.b);
+  return { b: b > 0 && b <= 5 ? Math.round(b * 10) / 10 : LINE_MID, m };
+};
+
+/** Ce que change le vivier de vers de la révision au hasard. « Inconnu »
+ *  vaut ici pour un vers jamais demandé aussi bien que pour un vers raté :
+ *  sans cela le réglage ne servirait à rien tant qu'on n'a pas tout révisé
+ *  une première fois. */
+const QUIZ_LINES_HINT = {
+  all: "N'importe quel vers du poème tiré.",
+  half: "Une question sur deux porte sur un vers encore inconnu.",
+  weak: "Seulement les vers jamais sus ou ratés la dernière fois — un poème qui n'en a plus est passé.",
 };
 
 /* ------------------------------------------------------------------ */
@@ -884,6 +973,12 @@ const CSS = `
 .verse { white-space:pre-wrap; line-height:1.62; padding-left:1.5em; text-indent:-1.5em;
   transition:filter .4s, opacity .4s; }
 .masked { filter:blur(8px); opacity:.35; user-select:none; pointer-events:none; }
+/* Vers raté la dernière fois : un trait dans la marge de la page — il tient
+   dans le padding, donc rien ne se décale, et il reste net sous le flou
+   puisqu'il est porté par le conteneur et non par le vers. */
+.weakline { position:relative; }
+.weakline::before { content:''; position:absolute; left:-10px; top:.18em; bottom:.18em;
+  width:2px; border-radius:1px; background:var(--hot); }
 /* Blanc entre deux strophes. */
 .gap { height:1em; }
 /* Provenance, en pied de poème : le texte est du domaine public, la
@@ -900,6 +995,7 @@ const CSS = `
 .revprog { display:flex; align-items:center; gap:10px; font-family:'Barlow Condensed'; font-size:12px;
   letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
 .revprog b { color:var(--acc); }
+.revprog .revweak { color:var(--hot); }
 .revtrack { flex:1; height:3px; background:var(--line); border-radius:2px; overflow:hidden; }
 .revfill { height:100%; background:var(--acc); transition:width .3s; }
 .revrow { display:flex; gap:8px; align-items:stretch; }
@@ -1011,8 +1107,10 @@ const CSS = `
 
 /** maskFrom : en révision, numéro d'unité à partir duquel le texte est
  *  flouté ; maskUnits donne l'unité de chaque bloc (null = jamais masqué :
- *  blancs, repères, didascalies). La structure guide, le texte se mérite. */
-function Sheet({ blocks, size, maskFrom, maskUnits, source }) {
+ *  blancs, repères, didascalies). La structure guide, le texte se mérite.
+ *  unitWeak marque les vers ratés à la dernière demande : le trait dans la
+ *  marge se lit AVANT la révélation — c'est là qu'il sert. */
+function Sheet({ blocks, size, maskFrom, maskUnits, unitWeak, source }) {
   // Dernier bloc de l'unité tout juste révélée : c'est lui qu'on recentre.
   let frontierBlock = -1;
   if (maskFrom != null && maskUnits) {
@@ -1024,9 +1122,16 @@ function Sheet({ blocks, size, maskFrom, maskUnits, source }) {
         if (b.type === "blank") return <div className="gap" key={i} />;
         const unit = maskUnits ? maskUnits[i] : null;
         const masked = maskFrom != null && unit != null && unit >= maskFrom;
-        return (
+        const verse = (
           <div className={"verse" + (masked ? " masked" : "")}
             data-frontier={i === frontierBlock ? "1" : undefined} key={i}>{b.text}</div>
+        );
+        // Le marqueur vit dans un conteneur, jamais sur le vers lui-même : le
+        // flou de .masked emporterait un ::before posé dessus, et
+        // l'avertissement arriverait après coup.
+        if (!(unitWeak && unit != null && unitWeak[unit])) return verse;
+        return (
+          <div className="weakline" key={i} title="Raté la dernière fois — celui-ci vous a échappé">{verse}</div>
         );
       })}
       {source && (
@@ -1591,7 +1696,6 @@ export default function Poesie() {
   const [memoPrompt, setMemoPrompt] = useState(false);
   const [memoDraft, setMemoDraft] = useState(0);
   const memoPromptedRef = useRef(false); // une seule apparition par session
-  const memoLiveRef = useRef(null); // score non arrondi — l'arrondi gèlerait les petits pas
   const memoBeforeRef = useRef(null);
   const pendingReviseRef = useRef(false);
 
@@ -1602,7 +1706,13 @@ export default function Poesie() {
   const [quizAsk, setQuizAsk] = useState(false);
   const [quizScope, setQuizScope] = useState("all"); // "all" | "weak"
   const [quizMax, setQuizMax] = useState(3);
+  // Quels vers tirer dans le poème : tous, une fois sur deux un vers encore
+  // inconnu, ou seulement ceux-là. Réglage d'état, non persisté.
+  const [quizLines, setQuizLines] = useState("all"); // "all" | "half" | "weak"
   const [quizDetail, setQuizDetail] = useState(false);
+  // Le vivier s'est vidé sans qu'aucune question ne soit posée (« Inconnus »
+  // sur un recueil déjà su) : le dire, plutôt que de rendre la main sans un mot.
+  const [quizNone, setQuizNone] = useState(false);
   const pendingQuizRef = useRef(false);
   const quizDeadRef = useRef(new Set()); // poèmes sans vers révisable croisés en route
   const quizPoolRef = useRef(null); // ids figés au départ (null = toute la sous-liste)
@@ -1857,6 +1967,29 @@ export default function Poesie() {
   const blocks = useMemo(() => (current ? parsePoem(current.body) : []), [current]);
   const reviseUnits = useMemo(() => reviseUnitsOf(blocks), [blocks]);
   const revealables = reviseUnits.count;
+  // Score mesuré de chaque vers (null = jamais demandé). De là sortent le
+  // marqueur de la page, le compte de la barre et le tirage au hasard.
+  const lineScores = useMemo(() => {
+    const lines = linesOf(current);
+    return reviseUnits.keys.map((k) => (k != null && lines.m[k] != null ? lines.m[k] : null));
+  }, [current, reviseUnits]);
+  // Marqué dans la marge : un vers DÉJÀ demandé et raté. Un vers jamais vu
+  // n'est pas un échec — le signaler peindrait toute la première révision
+  // d'un poème neuf et le marqueur ne voudrait plus rien dire.
+  const weakUnits = useMemo(() => lineScores.map((v) => v != null && !lineKnown(v)), [lineScores]);
+  const weakCount = weakUnits.filter(Boolean).length;
+  /* Le vivier de vers de la révision au hasard. « Inconnu » y est plus large
+     que le marqueur : un vers jamais demandé en fait partie — sinon le
+     réglage ne servirait à rien tant qu'on n'a pas tout révisé une première
+     fois. Renvoie -1 quand le poème n'a rien à proposer sous ce réglage. */
+  const pickQuizUnit = () => {
+    const weak = [];
+    for (let i = 0; i < revealables; i++) if (!lineKnown(lineScores[i])) weak.push(i);
+    const wanted = quizLines === "weak" || (quizLines === "half" && Math.random() < 0.5);
+    if (wanted && weak.length) return weak[Math.floor(Math.random() * weak.length)];
+    if (quizLines === "weak") return -1;
+    return Math.floor(Math.random() * revealables);
+  };
   const visibleLines = Math.min(revealables, reviseStart + revealed);
   // Unités à juger cette session : celles à partir du point de départ — en
   // départ aléatoire, le contexte déjà visible n'est pas jugé. La session ne
@@ -1871,7 +2004,6 @@ export default function Poesie() {
     setReviseStart(mode === "random" ? 1 + Math.floor(Math.random() * Math.max(1, revealables - 1)) : 0);
     setRevealed(0);
     setJudged(0);
-    memoLiveRef.current = null;
     memoBeforeRef.current = (current && current.memo) || null;
     memoPromptedRef.current = false;
     setMemoPrompt(false);
@@ -1879,16 +2011,19 @@ export default function Poesie() {
   const revealNext = () => {
     setRevealed((r) => Math.min(r + 1, Math.max(0, revealables - reviseStart)));
   };
-  /** Une réponse « savais » / « savais pas » fait faire un pas d'EMA au score
-   *  du poème, écrit à chaque fois : une session interrompue a déjà compté.
-   *  Le pas part de la valeur non arrondie gardée en ref. Renvoie le score
-   *  affiché avant et après le pas — c'est ce que la révision récapitule. */
+  /** Une réponse « savais » / « savais pas » écrit d'abord le VERS jugé — il
+   *  fait la moitié du chemin vers 5 ou vers 0 —, puis le score du poème en
+   *  est refait : la moyenne de tous ses vers, les jamais demandés au socle.
+   *  Écrit à chaque réponse, une session interrompue a déjà compté. Renvoie
+   *  le score affiché avant et après, pour le récapitulatif. */
   const applyAuto = (known) => {
     const before = (current && current.memo) || 0;
-    const next = emaStep(memoLiveRef.current ?? (current && current.memo), known, revealables);
-    memoLiveRef.current = next;
-    const m = clampMemo(next);
-    setPoems((prev) => prev.map((s) => (s.id === currentId ? { ...s, memo: m, memoAuto: true } : s)));
+    const key = reviseUnits.keys[visibleLines - 1]; // le vers tout juste révélé
+    const src = linesOf(current);
+    const lines = { b: src.b, m: { ...src.m } };
+    if (key) lines.m[key] = lineStep(lines.m[key], lines.b, known);
+    const m = clampMemo(scoreFromLines(lines, reviseUnits.keys));
+    setPoems((prev) => prev.map((s) => (s.id === currentId ? { ...s, lines, memo: m, memoAuto: true } : s)));
     return { before, after: m };
   };
   /** Le jugement porte sur le dernier vers révélé : en révision suivie,
@@ -1955,12 +2090,15 @@ export default function Poesie() {
     if (!pendingQuizRef.current || view !== "poem") return;
     pendingQuizRef.current = false;
     if (!revealables) { quizDeadRef.current.add(currentId); quizNext(); return; }
+    // « Seulement les inconnus » : un poème dont tout est su n'a rien à
+    // demander — on passe au suivant plutôt que de tricher sur le vivier.
+    const unit = pickQuizUnit();
+    if (unit < 0) { quizDeadRef.current.add(currentId); quizNext(); return; }
     setScrolling(false);
     setReviseMode("quiz");
-    setReviseStart(Math.floor(Math.random() * revealables));
+    setReviseStart(unit);
     setRevealed(0);
     setJudged(0);
-    memoLiveRef.current = null;
   }, [quizQ, currentId, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Au clavier : → « savais », ← « savais pas » ; Espace, Entrée ou ↓ ne
@@ -2192,7 +2330,7 @@ export default function Poesie() {
     const base = keep ? filtered.filter((s) => keep.has(s.id)) : filtered;
     let pool = base.filter((s) => s.id !== currentId && !dead.has(s.id));
     if (!pool.length) pool = base.filter((s) => !dead.has(s.id)); // un seul poème : la répétition est permise
-    if (!pool.length) { stopQuiz(); return; }
+    if (!pool.length) { stopQuiz(true); return; }
     const pick = pool[Math.floor(Math.random() * pool.length)];
     pendingQuizRef.current = true;
     setQuizQ((q) => q + 1);
@@ -2206,17 +2344,21 @@ export default function Poesie() {
     quizStatsRef.current = new Map();
     setQuizAsk(false);
     setQuizEnd(null);
+    setQuizNone(false);
     setQuiz({ asked: 0, correct: 0 });
     quizNext();
   };
-  const stopQuiz = () => {
+  const stopQuiz = (exhausted) => {
     const game = quiz;
     setQuiz(null);
     setReviseMode(null);
     pendingQuizRef.current = false;
     setQuizDetail(false);
     if (game && game.asked > 0) setQuizEnd({ ...game, rows: [...quizStatsRef.current.values()] });
-    else setView("lib");
+    // Vivier épuisé sans une seule question : la main revient à la liste, mais
+    // pas en silence — un bouton « Commencer » qui ne commence rien serait un
+    // piège. Un arrêt volontaire (■), lui, n'a rien à annoncer.
+    else { setView("lib"); if (exhausted) setQuizNone(true); }
   };
   const resetAll = async () => {
     if (!window.confirm("Tout effacer sur cet appareil ? Les poèmes et les réglages stockés localement seront supprimés, puis l'application rechargera sa dernière version. Copiez d'abord l'URL de partage si vous voulez pouvoir revenir en arrière.")) return;
@@ -2343,7 +2485,11 @@ export default function Poesie() {
     if (s.id !== current.id) return s;
     if (!n) { const { memo, memoAuto, ...rest } = s; return rest; }
     const { memoAuto, ...rest } = s;
-    return { ...rest, memo: n };
+    // Le socle suit la note choisie : sinon la première réponse de la
+    // prochaine révision ramènerait le poème vers le milieu, ses vers non
+    // révisés comptant pour 2,5 au lieu de ce qu'on vient de dire. Les vers
+    // déjà mesurés, eux, restent : ce sont des faits.
+    return { ...rest, memo: n, ...(rest.lines ? { lines: { ...rest.lines, b: n } } : {}) };
   }));
 
   const online = !offline || offline.online !== false;
@@ -2774,6 +2920,7 @@ export default function Poesie() {
                 <div className="modalicon">🎓</div>
                 <h2>Réviser</h2>
                 <p>Un vers au hasard d'un poème au hasard — l'aviez-vous en tête ?</p>
+                <p className="modalcount">Poèmes</p>
                 <div className="seg2 wide">
                   <button className={quizScope === "all" ? "on" : ""} aria-pressed={quizScope === "all"}
                     title="Tirage au hasard, à égalité, parmi tous les poèmes affichés"
@@ -2788,6 +2935,19 @@ export default function Poesie() {
                     <Stars value={quizMax} onChange={(n) => setQuizMax(n || 1)} />
                   </>
                 )}
+                <p className="modalcount">Vers</p>
+                <div className="seg2 wide tight">
+                  <button className={quizLines === "all" ? "on" : ""} aria-pressed={quizLines === "all"}
+                    title="N'importe quel vers du poème tiré"
+                    onClick={() => setQuizLines("all")}>Tous</button>
+                  <button className={quizLines === "half" ? "on" : ""} aria-pressed={quizLines === "half"}
+                    title="Une question sur deux porte sur un vers encore inconnu"
+                    onClick={() => setQuizLines("half")}>Un sur 2</button>
+                  <button className={quizLines === "weak" ? "on" : ""} aria-pressed={quizLines === "weak"}
+                    title="Seulement les vers jamais sus ou ratés la dernière fois"
+                    onClick={() => setQuizLines("weak")}>Inconnus</button>
+                </div>
+                <p>{QUIZ_LINES_HINT[quizLines]}</p>
                 <p className="modalcount">
                   {quizPool.length === 0
                     ? "Aucun poème dans ce vivier"
@@ -2797,6 +2957,20 @@ export default function Poesie() {
                 <div className="actions" style={{ justifyContent: "center" }}>
                   <button className="btn ghost" onClick={() => setQuizAsk(false)}>Annuler</button>
                   <button className="btn primary" disabled={!quizPool.length} onClick={startQuiz}>Commencer</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {quizNone && (
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Rien à réviser"
+              onClick={(e) => { if (e.target === e.currentTarget) setQuizNone(false); }}>
+              <div className="modalbox">
+                <div className="modalicon">🎉</div>
+                <h2>Rien à demander</h2>
+                <p>Tous les vers de ce vivier sont déjà sus. Revenez au réglage « Vers » —
+                  ou élargissez le vivier de poèmes.</p>
+                <div className="actions" style={{ justifyContent: "center" }}>
+                  <button className="btn primary" onClick={() => setQuizNone(false)}>D'accord</button>
                 </div>
               </div>
             </div>
@@ -2896,7 +3070,8 @@ export default function Poesie() {
               <div className="sizefly" aria-live="polite"><span>Taille <b>{size}</b></span></div>
             )}
             <Sheet blocks={blocks} size={size} source={current.source}
-              maskFrom={reviseMode ? visibleLines : null} maskUnits={reviseUnits.byBlock} />
+              maskFrom={reviseMode ? visibleLines : null} maskUnits={reviseUnits.byBlock}
+              unitWeak={reviseMode ? weakUnits : null} />
           </div>
           {scrolling && !reviseMode && (
             <div className="speedfly">
@@ -2923,7 +3098,7 @@ export default function Poesie() {
                     <button className="btn revmain dont" onClick={() => answer(false)}>✗ Savais pas</button>
                   </>)}
                   <button className="iconbtn stop" title="Arrêter la révision — score de la session"
-                    onClick={stopQuiz}>■</button>
+                    onClick={() => stopQuiz()}>■</button>
                 </div>
               </div>
             </div>
@@ -2935,6 +3110,9 @@ export default function Poesie() {
                   <span>{reviseMode === "random" ? "Départ aléatoire" : "Depuis le début"}</span>
                   <div className="revtrack"><div className="revfill" style={{ width: `${revealables ? (visibleLines / revealables) * 100 : 0}%` }} /></div>
                   <span><b>{visibleLines}</b> / {revealables}</span>
+                  {weakCount > 0 && (
+                    <span className="revweak" title={`${weakCount} vers raté${weakCount > 1 ? "s" : ""} la dernière fois — ils portent un trait dans la marge`}>▌{weakCount}</span>
+                  )}
                   {(current.memo || 0) > 0 && <span className="revscore">★ {fmtMemo(current.memo)}</span>}
                 </div>
                 <div className="revrow">

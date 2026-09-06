@@ -89,9 +89,20 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 
 - `carnet:v4` : `{ songs, showChords, size, speed, sort, sortDir, barOpen,
   instrument, theme, listFilter, player }`. Chanson : `{ id, title, artist, body,
-  steps, memo?, memoAuto? }` (`memo` 0.1–5, **une décimale**, absent si 0 ;
+  steps, memo?, memoAuto?, lines? }` (`memo` 0.1–5, **une décimale**, absent si 0 ;
   `memoAuto: true` = score écrit par le scoring automatique, effacé par un
   réglage manuel aux étoiles — qui passe par un `confirm` d'avertissement).
+  **`lines` est la mémoire ligne à ligne** dont `memo` n'est que la moyenne :
+  `{ b, m }` — `m` = empreinte d'unité → score 0–5, `b` = le socle, ce que
+  valent les unités jamais demandées (le score qu'avait la chanson quand sa
+  mémoire a commencé, ou la note posée à la main depuis : `setMemo` déplace
+  `b`, sinon la première réponse ramènerait au milieu une chanson notée 5 à
+  la main). L'empreinte (`lineKey`) est un FNV-1a du texte réduit aux
+  lettres et chiffres : **ancrée au texte, jamais au rang**, comme `songKey`
+  pour les tags — corriger une faute ailleurs, transposer, déplacer une
+  strophe ou réimporter d'une autre source ne perd rien. Deux lignes
+  identiques partagent donc leur score, et une ligne supprimée laisse sa clé
+  (inerte : `scoreFromLines` ne lit que les unités présentes).
   Champs mémoïsés par recherche externe : `am` (piste Apple Music, ou
   `{ none:true }`), `sp` (piste Spotify collée à la main : `{ id, url,
   title, artist }`) et `lrc` (LRCLIB : `{ dur, lines? }`, ou `{ none:true }` ;
@@ -172,9 +183,16 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 - URL de partage (`#v=1&data=…`) : songs + réglages **et les listes
   manuelles avec leur ordre** (`lists { defs, byKey, order? }` — décision du
   propriétaire : une setlist sans son ordre ne sert à rien) ; **sans** tags,
-  qui restent un classement personnel. À l'ouverture d'un lien les listes
-  reçues sont **fusionnées** (`mergeLists`), jamais substituées : un ordre
-  déjà décidé sur l'appareil survit au lien.
+  qui restent un classement personnel — **ni la mémoire ligne à ligne**
+  (`lines`, décision du propriétaire) : le carnet qu'on donne à un ami
+  n'arrive pas avec les ratés de son auteur, et des empreintes ne se
+  compressent pas. Elle voyage par la sauvegarde en fichier, comme `am`,
+  `sp` et `lrc.lines`. À l'ouverture d'un lien les listes reçues sont
+  **fusionnées** (`mergeLists`), jamais substituées : un ordre déjà décidé
+  sur l'appareil survit au lien. Même esprit dans `mergeByTitle` : ce qui
+  arrive **sans** mémoire ligne à ligne (une URL de partage, un PDF
+  réimporté) hérite de celle de l'appareil au lieu de l'effacer ; ce qui en
+  apporte une (une sauvegarde) prime.
   Sauvegarde fichier : `backupJson { songs, tags, lists, spAuth? }`
   — sa signature pilote le point ambre « dirty » ; en changer le format
   change la signature. `spAuth` (identifiants Spotify) vit dans sa propre
@@ -356,11 +374,32 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   pour la première unité, puis chaque ✓ Savais / ✗ Savais pas juge la
   dernière unité révélée ET révèle la suivante ; la session ne finit qu'une
   fois la dernière unité jugée (`judged >= toJudge`, `toJudge` exclut le
-  contexte d'un départ aléatoire). Chaque réponse fait un pas d'EMA
-  (`emaStep`, α dérivé du nombre d'unités : une session complète pèse ~50 %),
-  valeur non arrondie gardée dans `memoLiveRef` pendant la session — seul
-  `song.memo` est arrondi (une décimale, jamais 0). Clavier : → savais,
-  ← savais pas, Espace/Entrée/↓ = première révélation seulement.
+  contexte d'un départ aléatoire). Chaque réponse écrit d'abord **la ligne
+  jugée** — elle fait la moitié du chemin vers 5 (« savais ») ou 0
+  (« savais pas »), `lineStep` —, puis `song.memo` est **refait de zéro** :
+  la moyenne de toutes les unités, les non mesurées au socle
+  (`scoreFromLines`, arrondi à une décimale, jamais 0). Une session complète
+  déplace donc le score de moitié, exactement comme l'ancienne EMA globale
+  (`emaStep`, supprimée), mais une session partielle ne ment plus : réviser
+  trois lignes sur quarante ne prétend pas juger les trente-sept autres, et
+  une ligne ratée dix fois tire le score vers le bas à elle seule. Plus de
+  score « en vol » (`memoLiveRef` supprimé) : tout se relit des lignes.
+  Clavier : → savais, ← savais pas, Espace/Entrée/↓ = première révélation
+  seulement.
+- **Une ligne est « sue » au-dessus de 2,5** (`lineKnown` — la dernière
+  réponse pesant la moitié, cela revient à « vous l'aviez la dernière
+  fois »). Deux lectures de ce seuil, volontairement différentes :
+  le **marqueur** de la feuille ne montre que les lignes DÉJÀ demandées et
+  ratées (`weakUnits`) — signaler aussi les lignes jamais vues peindrait
+  toute la première révision d'une chanson neuve et le trait ne voudrait
+  plus rien dire ; le **tirage** du quiz, lui, compte une ligne jamais
+  demandée comme inconnue, sans quoi le réglage ne servirait à rien avant
+  d'avoir tout révisé une fois.
+- Le marqueur est un trait `--hot` dans la marge (`.weakline::before`),
+  posé sur un **conteneur** et jamais sur la ligne elle-même : le
+  `filter:blur` de `.masked` l'emporterait, et l'avertissement doit se lire
+  **avant** la révélation. Il tient dans le padding de la feuille, donc rien
+  ne se décale. La barre de révision en donne le compte (`▌n`).
 - **Palette flottante de la liste : deux boutons, 🎹 Jouer et 🎓 Réviser.**
   « Réviser » y est l'ancien mode Quiz (`askQuiz` / `startQuiz`) — décision
   utilisateur : le mot « quiz » et son ❓ ont disparu de l'interface, la
@@ -394,9 +433,17 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
   ré-armement passe par `pendingQuizRef` + nonce `quizQ` (obligatoire quand
   le hasard retombe sur la même chanson) ; les chansons sans paroles
   croisées en route vont dans `quizDeadRef`.
-- Lancement : le 🎓 de la liste ouvre d'abord un popup de vivier — « Toutes » ou
-  « Les moins connues » avec un seuil d'étoiles (`quizScope`, `quizMax` ;
-  note ≤ seuil, une chanson non notée compte pour 0 donc toujours dedans).
+- Lancement : le 🎓 de la liste ouvre d'abord un popup de vivier, en deux
+  étages. **Chansons** — « Toutes » ou « Les moins connues » avec un seuil
+  d'étoiles (`quizScope`, `quizMax` ; note ≤ seuil, une chanson non notée
+  compte pour 0 donc toujours dedans). **Lignes** (`quizLines`) — « Toutes »,
+  « Une sur 2 » (une question sur deux tirée parmi les inconnues) ou
+  « Inconnues » ; `pickQuizUnit` tire l'unité en conséquence et renvoie −1
+  quand la chanson n'a rien à proposer, auquel cas elle rejoint `quizDeadRef`
+  et on passe à la suivante. Vivier épuisé sans une seule question posée
+  (« Inconnues » sur un carnet déjà su) : popup **« Rien à demander »**
+  (`quizNone`, armé par `stopQuiz(true)` depuis `quizNext` seulement) — un
+  bouton « Commencer » qui rend la main sans un mot serait un piège.
   Le vivier retenu est **figé en ids** dans `quizPoolRef` au démarrage :
   répondre juste fait monter le score, mais la chanson ne doit pas quitter
   la partie en cours de route. Choix gardé en état (non persisté) : pas de
@@ -417,15 +464,17 @@ CSS, composants) — modifications ciblées, pas de découpage en fichiers.
 Frère du carnet d'accords : tout `Poesie.jsx`, même architecture, même
 design system (variables sur `.cb`, thème clair `.cb.light`), mais
 `--amber` s'y appelle `--acc`. Modèle : `{ id, title, author, body,
-memo?, memoAuto?, source? }`, clé `poesie:v1`, préfixe localStorage
+memo?, memoAuto?, lines?, source? }`, clé `poesie:v1`, préfixe localStorage
 `carnet-poesie:` — **impératif**, les deux apps partagent l'origine.
 Deux polices seulement : EB Garamond (vers et texte courant), Barlow
 Condensed (chrome et micro-capitales — pas de monospace ici).
 
-Le noyau est repris tel quel du carnet : révision, `emaStep`/`applyAuto`,
-tirages pondérés, quiz (« Réviser » au hasard), tags, listes et leur
-ordre, partage URL, backup, PWA. **Ne pas diverger sans raison** : une
-correction utile ici l'est probablement là-bas aussi.
+Le noyau est repris tel quel du carnet : révision, mémoire vers à vers
+(`lines`, `lineKey`/`lineStep`/`scoreFromLines`, marqueur `.weakline`,
+réglage `quizLines` du popup), `applyAuto`, tirages pondérés, quiz
+(« Réviser » au hasard), tags, listes et leur ordre, partage URL, backup,
+PWA. **Ne pas diverger sans raison** : une correction utile ici l'est
+probablement là-bas aussi.
 
 ### Ce qui lui est propre
 

@@ -718,6 +718,10 @@ function normalizeLibrary(data) {
       // URL de partage comprise ; les paroles horodatées (lrc.lines)
       // arrivent par la sauvegarde en fichier, encodeShare les retire.
       ...(lrcNorm(s.lrc) ? { lrc: lrcNorm(s.lrc) } : {}),
+      // Mémoire ligne à ligne : elle voyage par la sauvegarde en fichier,
+      // jamais par l'URL de partage — c'est votre apprentissage, pas une
+      // propriété du carnet (même sort que les tags).
+      ...(linesNorm(s.lines) ? { lines: linesNorm(s.lines) } : {}),
     }));
   if (!songs.length) throw new Error("aucune grille exploitable");
   const lib = { songs };
@@ -742,7 +746,10 @@ async function encodeShare(library, lists) {
     // synchronisées (lrc.lines, plusieurs Ko par chanson) — la durée seule
     // voyage. Le choix du service (player) reste lui aussi hors de l'URL :
     // c'est l'abonnement de celui qui joue, pas une propriété du carnet.
-    songs: library.songs.map(({ id, am, sp, lrc, ...rest }) => (lrc
+    // La mémoire ligne à ligne (lines) reste dehors elle aussi : le carnet
+    // qu'on donne à un ami n'arrive pas avec les ratés de son auteur — et
+    // des empreintes ne se compressent pas.
+    songs: library.songs.map(({ id, am, sp, lrc, lines, ...rest }) => (lrc
       ? { ...rest, lrc: lrc.none ? { none: true } : { dur: lrc.dur } }
       : rest)),
     showChords: library.showChords,
@@ -1062,7 +1069,16 @@ async function saveLists(l) {
 const fmtBytes = (n) => (n < 1024 ? `${n} o` : `${(n / 1024).toFixed(1)} Ko`);
 const mergeByTitle = (prev, added) => {
   const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-  return [...prev.filter((s) => !added.some((a) => norm(a.title) === norm(s.title))), ...added];
+  // La mémoire ligne à ligne de l'appareil survit à ce qui arrive de
+  // l'extérieur : l'URL de partage ne la transporte pas, et réimporter le PDF
+  // d'une chanson déjà travaillée n'a aucune raison d'effacer des semaines de
+  // révision. Ce que le nouveau venu apporte (une sauvegarde) prime.
+  const kept = new Map();
+  for (const s of prev) if (s.lines) kept.set(norm(s.title), s.lines);
+  return [
+    ...prev.filter((s) => !added.some((a) => norm(a.title) === norm(s.title))),
+    ...added.map((a) => (a.lines || !kept.has(norm(a.title)) ? a : { ...a, lines: kept.get(norm(a.title)) })),
+  ];
 };
 
 /* ------------------------------------------------------------------ */
@@ -1781,14 +1797,84 @@ const fmtDur = (d) => `${Math.floor(d / 60)}:${String(Math.round(d) % 60).padSta
 const fmtMemo = (m) => (Math.round(Number(m) * 10) / 10).toFixed(1).replace(/\.0$/, "").replace(".", ",");
 /** Jamais 0 (qui supprimerait la clé memo), jamais plus d'une décimale. */
 const clampMemo = (m) => Math.min(5, Math.max(0.1, Math.round(m * 10) / 10));
-/** Un pas de score : moyenne mobile exponentielle vers 5 (« savais ») ou 0
- *  (« savais pas »). α dépend du nombre d'unités de la chanson pour qu'une
- *  session complète pèse ~50 % du score, courte ou longue — et qu'une seule
- *  réponse de quiz pèse « une unité de cette chanson ». */
-const emaStep = (memo, known, units) => {
-  const a = Math.min(0.5, Math.max(0.03, 1 - 0.5 ** (1 / Math.max(1, units))));
-  const base = Number(memo) > 0 ? Number(memo) : 2.5;
-  return base + a * ((known ? 5 : 0) - base);
+
+/* ------------------------------------------------------------------ */
+/* Mémoire ligne à ligne                                               */
+/*                                                                     */
+/* Le score d'une chanson n'est pas une impression d'ensemble : c'est  */
+/* la moyenne de ses lignes, chacune se souvenant de la dernière fois  */
+/* qu'on la lui a demandée. De là viennent aussi le marqueur de la     */
+/* feuille (« celle-ci vous a échappé ») et le tirage du quiz.         */
+/* ------------------------------------------------------------------ */
+
+/** Empreinte d'une unité de révision : son texte réduit aux lettres et
+ *  chiffres (casse, accents, ponctuation et alignement du PDF mis de côté),
+ *  puis FNV-1a en base 36. C'est elle, et non le rang de la ligne, qui ancre
+ *  le score — même doctrine que songKey pour les tags : réimporter la
+ *  chanson d'une autre source, corriger une faute ailleurs ou déplacer une
+ *  strophe ne doit pas effacer des semaines de révision. */
+const lineKey = (text) => {
+  const s = String(text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (!s) return null;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(36);
+};
+/** Le milieu de l'échelle : ni sue, ni ratée. */
+const LINE_MID = 2.5;
+/** Une ligne est « sue » au-dessus du milieu. Comme un pas fait la moitié du
+ *  chemin, cela revient à dire : vous l'aviez la dernière fois. */
+const lineKnown = (v) => Number(v) > LINE_MID;
+/** La mémoire d'une chanson : { b, m }. m = les lignes mesurées (empreinte →
+ *  score 0–5) ; b = le socle, ce que valent les lignes jamais demandées —
+ *  le score qu'avait la chanson quand sa mémoire a commencé, ou la note
+ *  posée à la main depuis. Sans ce socle, réviser trois lignes sur quarante
+ *  prétendrait juger les trente-sept autres. */
+const linesOf = (song) => (song && song.lines && song.lines.m
+  ? song.lines
+  : { b: song && Number(song.memo) > 0 ? Number(song.memo) : LINE_MID, m: {} });
+/** Un pas de ligne : la moitié du chemin vers 5 (« savais ») ou 0 (« savais
+ *  pas »). Une décimale suffit — c'est déjà plus fin que ce qui s'affiche,
+ *  et la mémoire d'un carnet entier reste légère. */
+const lineStep = (v, base, known) => {
+  const from = v == null ? base : Number(v);
+  return Math.round((from + 0.5 * ((known ? 5 : 0) - from)) * 10) / 10;
+};
+/** Le score de la chanson : la moyenne de ses unités, les non mesurées au
+ *  socle. Une session complète le déplace de moitié, exactement comme
+ *  l'EMA globale d'avant — mais une session partielle ne ment plus. */
+const scoreFromLines = (lines, keys) => {
+  if (!keys.length) return lines.b;
+  let sum = 0;
+  for (const k of keys) sum += k != null && lines.m[k] != null ? lines.m[k] : lines.b;
+  return sum / keys.length;
+};
+/** Mémoire venue de l'extérieur : empreintes courtes, scores 0–5. Comme
+ *  tout champ de chanson, elle doit traverser normalizeLibrary sans se
+ *  perdre — mais rien n'oblige à la croire sur parole. */
+const linesNorm = (v) => {
+  if (!v || typeof v !== "object" || !v.m || typeof v.m !== "object") return null;
+  const m = {};
+  let n = 0;
+  for (const [k, val] of Object.entries(v.m)) {
+    if (!/^[a-z0-9]{1,8}$/.test(k) || !(Number(val) >= 0)) continue;
+    m[k] = Math.min(5, Math.round(Number(val) * 10) / 10);
+    if (++n >= 4000) break;
+  }
+  if (!n) return null;
+  const b = Number(v.b);
+  return { b: b > 0 && b <= 5 ? Math.round(b * 10) / 10 : LINE_MID, m };
+};
+
+/** Ce que change le vivier de lignes du quiz. « Inconnue » vaut ici pour
+ *  une ligne jamais demandée aussi bien que pour une ligne ratée : sans
+ *  cela le réglage ne servirait à rien tant qu'on n'a pas tout révisé une
+ *  première fois. */
+const QUIZ_LINES_HINT = {
+  all: "N'importe quelle ligne de la chanson tirée.",
+  half: "Une question sur deux porte sur une ligne encore inconnue.",
+  weak: "Seulement les lignes jamais sues ou ratées la dernière fois — une chanson qui n'en a plus est passée.",
 };
 
 /** Note d'apprentissage : cinq étoiles tappables ; retaper la note courante
@@ -2141,6 +2227,12 @@ const CSS = `
 .row { display:flex; flex-wrap:wrap; align-items:flex-end; margin-bottom:2px; }
 .row, .plain { transition:filter .4s, opacity .4s; }
 .masked { filter:blur(8px); opacity:.35; user-select:none; pointer-events:none; }
+/* Ligne ratée la dernière fois : un trait dans la marge de la feuille — il
+   tient dans le padding, donc rien ne se décale, et il reste net sous le
+   flou puisqu'il est porté par le conteneur et non par la ligne. */
+.weakline { position:relative; }
+.weakline::before { content:''; position:absolute; left:-9px; top:.18em; bottom:.18em;
+  width:2px; border-radius:1px; background:var(--hot); }
 .revbar { position:absolute; left:0; right:0; bottom:0; z-index:4; display:flex; flex-direction:column; gap:9px;
   padding:10px 16px calc(14px + var(--sab));
   background:linear-gradient(to top, var(--bg) 72%, transparent); }
@@ -2148,6 +2240,7 @@ const CSS = `
 .revprog { display:flex; align-items:center; gap:10px; font-family:'JetBrains Mono'; font-size:10px;
   letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
 .revprog b { color:var(--amber); }
+.revprog .revweak { color:var(--hot); }
 .revtrack { flex:1; height:3px; background:var(--line); border-radius:2px; overflow:hidden; }
 .revfill { height:100%; background:var(--amber); transition:width .3s; }
 .revrow { display:flex; gap:8px; align-items:stretch; }
@@ -2573,8 +2666,10 @@ function ChordFlow({ events, index, setIndex, instrument, setInstrument, onClose
 
 /** maskFrom : en révision, numéro d'unité à partir duquel le texte est
  *  flouté ; maskUnits donne l'unité de chaque bloc (null = jamais masqué :
- *  sections, blancs, instrumentales). La structure guide, le texte se mérite. */
-function Sheet({ blocks, showChords, size, maskFrom, maskUnits, onChordTap }) {
+ *  sections, blancs, instrumentales). La structure guide, le texte se mérite.
+ *  unitWeak marque les unités ratées à la dernière demande : le trait dans
+ *  la marge se lit AVANT la révélation — c'est là qu'il sert. */
+function Sheet({ blocks, showChords, size, maskFrom, maskUnits, unitWeak, onChordTap }) {
   // Dernier bloc de l'unité tout juste révélée : c'est lui qu'on recentre.
   let frontierBlock = -1;
   if (maskFrom != null && maskUnits) {
@@ -2590,13 +2685,20 @@ function Sheet({ blocks, showChords, size, maskFrom, maskUnits, onChordTap }) {
         const frontier = i === frontierBlock;
         const cls = masked ? " masked" : "";
         const fr = frontier ? "1" : undefined;
-        if (b.type === "text") return <div className={"plain" + cls} data-frontier={fr} key={i}>{b.text}</div>;
+        // Le marqueur vit dans un conteneur, jamais sur la ligne elle-même :
+        // le flou de .masked emporterait un ::before posé dessus, et
+        // l'avertissement arriverait après coup.
+        const weak = !!(unitWeak && unit != null && unitWeak[unit]);
+        const mark = (node) => (weak
+          ? <div className="weakline" key={i} title="Ratée la dernière fois — celle-ci vous a échappé">{node}</div>
+          : node);
+        if (b.type === "text") return mark(<div className={"plain" + cls} data-frontier={fr} key={i}>{b.text}</div>);
         if (!showChords) {
           // Les blancs venaient de l'alignement des accords : on les résorbe.
           const text = b.cells.map((c) => c.lyrics).join("").replace(/\s+/g, " ").trim();
-          return text ? <div className={"plain" + cls} data-frontier={fr} key={i}>{text}</div> : <div className="gap" key={i} />;
+          return text ? mark(<div className={"plain" + cls} data-frontier={fr} key={i}>{text}</div>) : <div className="gap" key={i} />;
         }
-        return (
+        return mark(
           <div className={"row" + cls} data-frontier={fr} data-bi={i} key={i}>
             {b.cells.map((c, j) => {
               // Un vrai accord ouvre la visualisation ; les jetons (N.C., x2…)
@@ -2619,7 +2721,7 @@ function Sheet({ blocks, showChords, size, maskFrom, maskUnits, onChordTap }) {
                 </span>
               );
             })}
-          </div>
+          </div>,
         );
       })}
     </div>
@@ -2883,7 +2985,6 @@ export default function Carnet() {
   const [memoPrompt, setMemoPrompt] = useState(false); // popup de score en fin de révision
   const [memoDraft, setMemoDraft] = useState(0);
   const memoPromptedRef = useRef(false); // une seule apparition par session de révision
-  const memoLiveRef = useRef(null); // score non arrondi de la session — l'arrondi à une décimale gèlerait les petits pas
   const memoBeforeRef = useRef(null); // score au départ de la session, pour le popup de fin
   const draggingRef = useRef(false);
   const resumeRef = useRef(null);
@@ -2918,7 +3019,14 @@ export default function Carnet() {
   const [queue, setQueue] = useState({ ids: [], random: false });
   const [quizScope, setQuizScope] = useState("all"); // "all" = tout l'affichage | "weak" = sous le seuil d'étoiles
   const [quizMax, setQuizMax] = useState(3); // seuil du vivier « moins connues » (note ≤ seuil)
+  // Quelles lignes tirer dans la chanson : toutes, une fois sur deux une
+  // ligne encore inconnue, ou seulement celles-là. Réglage d'état, non
+  // persisté — comme quizScope, carnet:v4 ne bouge pas.
+  const [quizLines, setQuizLines] = useState("all"); // "all" | "half" | "weak"
   const [quizDetail, setQuizDetail] = useState(false); // détail avant → après déplié en fin de partie
+  // Le vivier s'est vidé sans qu'aucune question ne soit posée (« Inconnues »
+  // sur un carnet déjà su) : le dire, plutôt que de rendre la main sans un mot.
+  const [quizNone, setQuizNone] = useState(false);
   const pendingQuizRef = useRef(false); // question à armer dès la chanson ouverte
   const quizDeadRef = useRef(new Set()); // chansons sans paroles croisées pendant la partie : écartées du vivier
   const quizPoolRef = useRef(null); // ids figés au départ de la partie (null = toute la sous-liste affichée)
@@ -3398,6 +3506,7 @@ export default function Carnet() {
   const reviseUnits = useMemo(() => {
     const byBlock = new Array(blocks.length).fill(null);
     const kinds = [];
+    const texts = []; // texte de chaque unité, d'où sort son empreinte
     let kind = "verse";
     let chorusUnit = -1; // unité de la section refrain en cours
     // Préambule : avant la première section, un bloc sans le moindre accord
@@ -3449,16 +3558,45 @@ export default function Carnet() {
         : b.type === "text" ? !!b.text.trim() : false;
       if (!lyrical || notation(b)) return;
       if (kind === "chorus") {
-        if (chorusUnit < 0) { chorusUnit = kinds.length; kinds.push("chorus"); }
+        if (chorusUnit < 0) { chorusUnit = kinds.length; kinds.push("chorus"); texts.push(""); }
         byBlock[i] = chorusUnit;
+        // Un refrain fait une seule unité de plusieurs blocs : son empreinte
+        // se prend sur tout le refrain, pas sur sa première ligne.
+        texts[chorusUnit] += " " + textOf(b);
       } else {
         byBlock[i] = kinds.length;
         kinds.push("verse");
+        texts.push(textOf(b));
       }
     });
-    return { byBlock, kinds };
+    // Les paroles seules donnent l'empreinte : transposer la chanson ne
+    // déplace pas sa mémoire.
+    return { byBlock, kinds, keys: texts.map(lineKey) };
   }, [blocks]);
   const revealables = reviseUnits.kinds.length;
+  // Score mesuré de chaque unité (null = jamais demandée). De là sortent le
+  // marqueur de la feuille, le compte de la barre et le tirage du quiz.
+  const lineScores = useMemo(() => {
+    const lines = linesOf(current);
+    return reviseUnits.keys.map((k) => (k != null && lines.m[k] != null ? lines.m[k] : null));
+  }, [current, reviseUnits]);
+  // Marquée dans la marge : une ligne DÉJÀ demandée et ratée. Une ligne
+  // jamais vue n'est pas un échec — la signaler peindrait toute la première
+  // révision d'une chanson neuve et le marqueur ne voudrait plus rien dire.
+  const weakUnits = useMemo(() => lineScores.map((v) => v != null && !lineKnown(v)), [lineScores]);
+  const weakCount = weakUnits.filter(Boolean).length;
+  /* Le vivier de lignes du quiz. « Inconnue » y est plus large que le
+     marqueur : une ligne jamais demandée en fait partie — sinon le réglage
+     ne servirait à rien tant qu'on n'a pas tout révisé une première fois.
+     Renvoie -1 quand la chanson n'a rien à proposer sous ce réglage. */
+  const pickQuizUnit = () => {
+    const weak = [];
+    for (let i = 0; i < revealables; i++) if (!lineKnown(lineScores[i])) weak.push(i);
+    const wanted = quizLines === "weak" || (quizLines === "half" && Math.random() < 0.5);
+    if (wanted && weak.length) return weak[Math.floor(Math.random() * weak.length)];
+    if (quizLines === "weak") return -1;
+    return Math.floor(Math.random() * revealables);
+  };
   const visibleLines = Math.min(revealables, reviseStart + revealed);
   // Unités à juger cette session : celles à partir du point de départ — en
   // départ aléatoire, le contexte déjà visible n'est pas jugé. La session ne
@@ -3473,7 +3611,6 @@ export default function Carnet() {
     setReviseStart(mode === "random" ? 1 + Math.floor(Math.random() * Math.max(1, revealables - 1)) : 0);
     setRevealed(0);
     setJudged(0);
-    memoLiveRef.current = null;
     memoBeforeRef.current = (current && current.memo) || null;
     memoPromptedRef.current = false;
     setMemoPrompt(false);
@@ -3481,16 +3618,20 @@ export default function Carnet() {
   const revealNext = () => {
     setRevealed((r) => Math.min(r + 1, Math.max(0, revealables - reviseStart)));
   };
-  /** Une réponse « savais » / « savais pas » fait faire un pas d'EMA au score
-   *  de la chanson, écrit à chaque fois : une session interrompue a déjà
-   *  compté. Le pas part de la valeur non arrondie gardée en ref. Renvoie le
-   *  score affiché avant et après le pas — c'est ce que le quiz récapitule. */
+  /** Une réponse « savais » / « savais pas » écrit d'abord la LIGNE jugée —
+   *  elle fait la moitié du chemin vers 5 ou vers 0 —, puis le score de la
+   *  chanson en est refait : la moyenne de toutes ses unités, les jamais
+   *  demandées au socle. Écrit à chaque réponse, une session interrompue a
+   *  déjà compté. Renvoie le score affiché avant et après, pour le
+   *  récapitulatif du quiz. */
   const applyAuto = (known) => {
     const before = (current && current.memo) || 0;
-    const next = emaStep(memoLiveRef.current ?? (current && current.memo), known, revealables);
-    memoLiveRef.current = next;
-    const m = clampMemo(next);
-    setSongs((prev) => prev.map((s) => (s.id === currentId ? { ...s, memo: m, memoAuto: true } : s)));
+    const key = reviseUnits.keys[visibleLines - 1]; // l'unité tout juste révélée
+    const src = linesOf(current);
+    const lines = { b: src.b, m: { ...src.m } };
+    if (key) lines.m[key] = lineStep(lines.m[key], lines.b, known);
+    const m = clampMemo(scoreFromLines(lines, reviseUnits.keys));
+    setSongs((prev) => prev.map((s) => (s.id === currentId ? { ...s, lines, memo: m, memoAuto: true } : s)));
     return { before, after: m };
   };
   /** Le jugement porte sur la dernière unité révélée : en révision, répondre
@@ -3559,12 +3700,15 @@ export default function Carnet() {
     if (!pendingQuizRef.current || view !== "song") return;
     pendingQuizRef.current = false;
     if (!revealables) { quizDeadRef.current.add(currentId); quizNext(); return; }
+    // « Seulement les inconnues » : une chanson dont tout est su n'a rien à
+    // demander — on passe à la suivante plutôt que de tricher sur le vivier.
+    const unit = pickQuizUnit();
+    if (unit < 0) { quizDeadRef.current.add(currentId); quizNext(); return; }
     setScrolling(false);
     setReviseMode("quiz");
-    setReviseStart(Math.floor(Math.random() * revealables));
+    setReviseStart(unit);
     setRevealed(0);
     setJudged(0);
-    memoLiveRef.current = null;
   }, [quizQ, currentId, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Au clavier : → « savais », ← « savais pas » ; Espace, Entrée ou ↓ ne
@@ -3868,7 +4012,7 @@ export default function Carnet() {
     const base = keep ? filtered.filter((s) => keep.has(s.id)) : filtered;
     let pool = base.filter((s) => s.id !== currentId && !dead.has(s.id));
     if (!pool.length) pool = base.filter((s) => !dead.has(s.id)); // une seule chanson : la répétition est permise
-    if (!pool.length) { stopQuiz(); return; }
+    if (!pool.length) { stopQuiz(true); return; }
     const pick = pool[Math.floor(Math.random() * pool.length)];
     pendingQuizRef.current = true;
     setQuizQ((q) => q + 1);
@@ -3882,17 +4026,21 @@ export default function Carnet() {
     quizStatsRef.current = new Map();
     setQuizAsk(false);
     setQuizEnd(null);
+    setQuizNone(false);
     setQuiz({ asked: 0, correct: 0 });
     quizNext();
   };
-  const stopQuiz = () => {
+  const stopQuiz = (exhausted) => {
     const game = quiz;
     setQuiz(null);
     setReviseMode(null);
     pendingQuizRef.current = false;
     setQuizDetail(false);
     if (game && game.asked > 0) setQuizEnd({ ...game, rows: [...quizStatsRef.current.values()] });
-    else setView("lib");
+    // Vivier épuisé sans une seule question : la main revient à la liste, mais
+    // pas en silence — un bouton « Commencer » qui ne commence rien serait un
+    // piège. Un arrêt volontaire (■), lui, n'a rien à annoncer.
+    else { setView("lib"); if (exhausted) setQuizNone(true); }
   };
   const resetAll = async () => {
     if (!window.confirm("Tout effacer sur cet appareil ? Les grilles et les réglages stockés localement seront supprimés, puis l'application rechargera sa dernière version. Copiez d'abord l'URL de partage si vous voulez pouvoir revenir en arrière.")) return;
@@ -4053,7 +4201,11 @@ export default function Carnet() {
     if (s.id !== current.id) return s;
     if (!n) { const { memo, memoAuto, ...rest } = s; return rest; }
     const { memoAuto, ...rest } = s;
-    return { ...rest, memo: n };
+    // Le socle suit la note choisie : sinon la première réponse de la
+    // prochaine révision ramènerait la chanson vers le milieu, ses lignes
+    // non révisées comptant pour 2,5 au lieu de ce qu'on vient de dire.
+    // Les lignes déjà mesurées, elles, restent : ce sont des faits.
+    return { ...rest, memo: n, ...(rest.lines ? { lines: { ...rest.lines, b: n } } : {}) };
   }));
 
   /* Apple Music. Jamais de recherche à l'affichage : uniquement sur un
@@ -5030,6 +5182,7 @@ export default function Carnet() {
                 <div className="modalicon">🎓</div>
                 <h2>Réviser</h2>
                 <p>Une ligne au hasard d'une chanson au hasard — l'aviez-vous en tête ?</p>
+                <p className="modalcount">Chansons</p>
                 <div className="seg2 wide">
                   <button className={quizScope === "all" ? "on" : ""} aria-pressed={quizScope === "all"}
                     title="Tirage au hasard, à égalité, parmi toutes les chansons affichées"
@@ -5044,6 +5197,19 @@ export default function Carnet() {
                     <Stars value={quizMax} onChange={(n) => setQuizMax(n || 1)} />
                   </>
                 )}
+                <p className="modalcount">Lignes</p>
+                <div className="seg2 wide tight">
+                  <button className={quizLines === "all" ? "on" : ""} aria-pressed={quizLines === "all"}
+                    title="N'importe quelle ligne de la chanson tirée"
+                    onClick={() => setQuizLines("all")}>Toutes</button>
+                  <button className={quizLines === "half" ? "on" : ""} aria-pressed={quizLines === "half"}
+                    title="Une question sur deux porte sur une ligne encore inconnue"
+                    onClick={() => setQuizLines("half")}>Une sur 2</button>
+                  <button className={quizLines === "weak" ? "on" : ""} aria-pressed={quizLines === "weak"}
+                    title="Seulement les lignes jamais sues ou ratées la dernière fois"
+                    onClick={() => setQuizLines("weak")}>Inconnues</button>
+                </div>
+                <p>{QUIZ_LINES_HINT[quizLines]}</p>
                 <p className="modalcount">
                   {quizPool.length === 0
                     ? "Aucune chanson dans ce vivier"
@@ -5053,6 +5219,20 @@ export default function Carnet() {
                 <div className="actions" style={{ justifyContent: "center" }}>
                   <button className="btn ghost" onClick={() => setQuizAsk(false)}>Annuler</button>
                   <button className="btn primary" disabled={!quizPool.length} onClick={startQuiz}>Commencer</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {quizNone && (
+            <div className="modal" role="dialog" aria-modal="true" aria-label="Rien à réviser"
+              onClick={(e) => { if (e.target === e.currentTarget) setQuizNone(false); }}>
+              <div className="modalbox">
+                <div className="modalicon">🎉</div>
+                <h2>Rien à demander</h2>
+                <p>Toutes les lignes de ce vivier sont déjà sues. Revenez au réglage « Lignes » —
+                  ou élargissez le vivier de chansons.</p>
+                <div className="actions" style={{ justifyContent: "center" }}>
+                  <button className="btn primary" onClick={() => setQuizNone(false)}>D'accord</button>
                 </div>
               </div>
             </div>
@@ -5298,6 +5478,7 @@ export default function Carnet() {
             )}
             <Sheet blocks={blocks} showChords={showChords} size={size}
               maskFrom={reviseMode ? visibleLines : null} maskUnits={reviseUnits.byBlock}
+              unitWeak={reviseMode ? weakUnits : null}
               onChordTap={showChords ? onChordTap : null} />
           </div>
           {scrolling && !reviseMode && (
@@ -5331,7 +5512,7 @@ export default function Carnet() {
                     <button className="btn revmain dont" onClick={() => answer(false)}>✗ Savais pas</button>
                   </>)}
                   <button className="iconbtn stop" title="Arrêter la révision — score de la session"
-                    onClick={stopQuiz}>■</button>
+                    onClick={() => stopQuiz()}>■</button>
                 </div>
               </div>
             </div>
@@ -5343,6 +5524,9 @@ export default function Carnet() {
                   <span>{reviseMode === "random" ? "Départ aléatoire" : "Depuis le début"}</span>
                   <div className="revtrack"><div className="revfill" style={{ width: `${revealables ? (visibleLines / revealables) * 100 : 0}%` }} /></div>
                   <span><b>{visibleLines}</b> / {revealables}</span>
+                  {weakCount > 0 && (
+                    <span className="revweak" title={`${weakCount} ligne${weakCount > 1 ? "s" : ""} ratée${weakCount > 1 ? "s" : ""} la dernière fois — elles portent un trait dans la marge`}>▌{weakCount}</span>
+                  )}
                   {(current.memo || 0) > 0 && <span className="revscore">★ {fmtMemo(current.memo)}</span>}
                 </div>
                 <div className="revrow">
