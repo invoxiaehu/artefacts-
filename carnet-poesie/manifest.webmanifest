@@ -1,0 +1,25 @@
+{
+  "name": "Carnet de poésie",
+  "short_name": "Poésie",
+  "description": "Carnet de poèmes : import depuis Wikisource, lecture au calme, révision vers à vers. Fonctionne sans connexion.",
+  "lang": "fr",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#14131A",
+  "theme_color": "#14131A",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
