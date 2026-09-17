@@ -425,6 +425,82 @@ const mergeByTitle = (prev, added) => {
     ...added.map((a) => (a.lines || !kept.has(norm(a.title)) ? a : { ...a, lines: kept.get(norm(a.title)) })),
   ];
 };
+/** Empreinte du texte d'un poème : ses lettres et ses chiffres, accents et
+ *  ponctuation mis de côté — même réduction que lineKey, un cran plus haut.
+ *  Elle dit « c'est le même poème » sans rien devoir au titre : une édition
+ *  qui capitalise autrement, un titre retouché, un auteur orthographié
+ *  d'une autre main ne créent pas un doublon. */
+const bodyKey = (body) => String(body || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+/** Titre libre pour une variante : « Le Dormeur du val (2) ». Deux poèmes de
+ *  même titre ET même auteur partageraient leur clé de tags et de listes
+ *  (poemKey) — le suffixe leur rend une identité, en plus de les distinguer
+ *  dans la liste. */
+const variantTitle = (title, author, taken) => {
+  for (let n = 2; n < 50; n++) {
+    const t = `${title} (${n})`;
+    if (!taken.has(poemKey({ title: t, author }))) return t;
+  }
+  return `${title} (${uid()})`;
+};
+
+/** Fusion d'un carnet REÇU (URL de partage, code collé) : elle n'enlève et
+ *  ne réécrit jamais rien. Décision du propriétaire : le lien AJOUTE.
+ *
+ *  - Un poème dont le texte est déjà dans le carnet n'apporte rien : il est
+ *    passé. C'est ce qui rend l'opération répétable — une app installée
+ *    depuis un lien relance le même fragment #data=… à chaque ouverture, et
+ *    sans ce garde-fou elle se dupliquerait indéfiniment.
+ *  - Un poème dont le texte diffère s'ajoute, même si un poème du même titre
+ *    existe déjà : deux éditions d'un même sonnet sont deux textes, et la
+ *    version travaillée sur cet appareil ne se fait pas écraser par celle
+ *    d'un ami. Le titre reçoit alors un « (2) ».
+ *  - Ce que l'appareil savait du poème de même titre suit la variante : sa
+ *    mémoire vers à vers (elle n'arrive jamais par l'URL, et les vers sont
+ *    pour la plupart les mêmes) et sa note, qui l'emporte alors sur celle de
+ *    l'expéditeur — le score d'un ami dit ce que lui a appris, pas vous.
+ *
+ *  (La restauration d'un fichier de sauvegarde, elle, garde mergeByTitle :
+ *  une sauvegarde est autoritaire, elle remet l'appareil dans son état.) */
+const mergeShared = (prev, added) => {
+  const bodies = new Set(prev.map((s) => bodyKey(s.body)).filter(Boolean));
+  const names = new Set(prev.map((s) => poemKey(s)));
+  const mine = new Map();
+  for (const s of prev) mine.set(poemKey(s), s);
+  const fresh = [];
+  for (const a of added) {
+    const b = bodyKey(a.body);
+    if (b && bodies.has(b)) continue;
+    if (b) bodies.add(b);
+    const key = poemKey(a);
+    let poem = a;
+    if (names.has(key)) {
+      const old = mine.get(key);
+      poem = { ...a, title: variantTitle(a.title, a.author, names) };
+      if (old && old.lines && !poem.lines) poem = { ...poem, lines: old.lines };
+      if (old && old.memo) poem = { ...poem, memo: old.memo, ...(old.memoAuto ? { memoAuto: true } : {}) };
+    }
+    names.add(poemKey(poem));
+    fresh.push(poem);
+  }
+  return { poems: fresh.length ? [...prev, ...fresh] : prev, added: fresh.length, known: added.length - fresh.length };
+};
+
+/** Ce qu'on dit après avoir ouvert un lien : ce qui est entré, et ce que le
+ *  carnet avait déjà. Un import qui n'ajoute rien doit le dire — sans quoi on
+ *  croit le lien cassé. */
+const sharedStatus = ({ added, known }) => {
+  const s = (n) => (n > 1 ? "s" : "");
+  if (!added) {
+    return known > 1
+      ? `Rien de nouveau dans ce lien : ses ${known} poèmes sont déjà dans le carnet.`
+      : "Rien de nouveau dans ce lien : son poème est déjà dans le carnet.";
+  }
+  return `${added} poème${s(added)} ajouté${s(added)} depuis l'URL`
+    + (known ? `, ${known} déjà présent${s(known)}.` : ".");
+};
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Clé de regroupement d'un auteur : casse et espaces ignorés. Assez pour
@@ -1225,6 +1301,9 @@ function Transfer({ library, tags, lists, backup, dirty, onImport, onShareUrl, o
       let lib;
       let addedTags = null;
       let addedLists = null;
+      // Un JSON, c'est une sauvegarde : elle fait autorité. Une URL ou un code,
+      // c'est le carnet de quelqu'un d'autre : il s'ajoute, il n'efface rien.
+      let shared = false;
       if (/^[[{]/.test(t)) {
         const parsed = JSON.parse(t);
         lib = normalizeLibrary(parsed);
@@ -1235,14 +1314,42 @@ function Transfer({ library, tags, lists, backup, dirty, onImport, onShareUrl, o
         if (!data) throw new Error();
         lib = await decodeShareData(data);
         addedLists = lib.lists || null; // les listes voyagent dans l'URL, les tags non
+        shared = true;
       }
-      onImport(lib.poems, lib, addedTags, addedLists);
+      const res = onImport(lib.poems, lib, addedTags, addedLists, shared) || { added: lib.poems.length, known: 0 };
       const withTags = addedTags && (addedTags.defs.length || Object.keys(addedTags.byKey).length);
-      setMsg(`${lib.poems.length} poème(s) ajouté(s)${withTags ? ", tags compris" : ""}.`);
+      setMsg(shared
+        ? (res.added
+          ? `${res.added} poème${plural(res.added)} ajouté${plural(res.added)}`
+            + (res.known ? `, ${res.known} déjà présent${plural(res.known)}.` : ".")
+          : (res.known > 1
+            ? `Rien de nouveau : les ${res.known} poèmes de ce lien sont déjà dans le carnet.`
+            : "Rien de nouveau : le poème de ce lien est déjà dans le carnet."))
+        : `${lib.poems.length} poème${plural(lib.poems.length)} ajouté${plural(lib.poems.length)}${withTags ? ", tags compris" : ""}.`);
       if (raw == null) setText("");
     } catch {
       setMsg("Texte non reconnu. Attendu : une liste JSON avec title, author et body, ou un code/URL généré par « Partager par URL ».");
     }
+  };
+
+  /** Sur iPhone, un carnet reçu passe presque toujours par ici : l'app posée
+   *  sur l'écran d'accueil ne partage pas son stockage avec Safari, où le lien
+   *  s'ouvre — les poèmes reçus atterrissent donc à côté du carnet, et c'est
+   *  en collant le lien ici qu'ils le rejoignent. Autant que ce soit un seul
+   *  geste. clipboard.readText() exige un geste de l'utilisateur, et iOS y
+   *  ajoute sa propre confirmation « Coller » : rien d'autre à demander. */
+  const pasteAndImport = async () => {
+    setFileMsg("");
+    let t = "";
+    try {
+      t = String((await navigator.clipboard.readText()) || "").trim();
+    } catch {
+      setPasteOpen(true);
+      setMsg("Collage refusé par le navigateur — collez le lien dans le champ ci-dessous, puis « Importer ».");
+      return;
+    }
+    if (!t) { setMsg("Le presse-papiers est vide : copiez d'abord le lien reçu."); return; }
+    await doImport(t);
   };
 
   /** Sur iPhone, la feuille de partage d'un *fichier* propose « Enregistrer dans
@@ -1373,10 +1480,18 @@ function Transfer({ library, tags, lists, backup, dirty, onImport, onShareUrl, o
           )}
         </p>
 
-        {/* 3 — recevoir un carnet collé : replié, c'est rare */}
+        {/* 3 — recevoir un carnet : un lien collé fusionne, il ne remplace pas */}
+        <p className="hint">
+          {isIOS
+            ? <>Un lien reçu s'ouvre dans <b>Safari</b>, et l'app posée sur l'écran d'accueil garde son
+              stockage à part : ses poèmes ne la rejoindraient pas tout seuls. Copiez le lien, revenez ici
+              et touchez <b>Coller un lien reçu</b> — ils s'<b>ajoutent</b> à votre carnet, rien n'est remplacé.</>
+            : <>Un lien reçu s'<b>ajoute</b> au carnet : ses poèmes rejoignent les vôtres, rien n'est remplacé.</>}
+        </p>
         <div className="actions">
+          <button className="btn primary" onClick={pasteAndImport}>Coller un lien reçu</button>
           <button className="btn ghost" onClick={() => setPasteOpen(!pasteOpen)}>
-            {pasteOpen ? "Masquer le collage" : "Coller une URL ou un code…"}
+            {pasteOpen ? "Masquer le collage" : "Coller à la main…"}
           </button>
           <button className="btn ghost" onClick={onClose}>Retour</button>
         </div>
@@ -1739,6 +1854,13 @@ export default function Poesie() {
   const sheetRef = useRef(null);
   const searchRef = useRef(null);
   const syncHashRef = useRef(false);
+  // Les fragments #data=… déjà avalés dans cette page : un aller-retour par
+  // les flèches du navigateur, ou un lien tapé deux fois, ne relance pas
+  // l'import (mergeShared n'ajouterait rien, mais le bandeau mentirait).
+  const seenShareRef = useRef(new Set());
+  // Les poèmes tels qu'ils sont MAINTENANT, pour un import déclenché hors
+  // rendu (écouteur hashchange, page Transfert) qui doit rendre son compte.
+  const poemsRef = useRef([]);
   const draggingRef = useRef(false);
   const resumeRef = useRef(null);
   const dragRef = useRef(null);
@@ -1756,16 +1878,20 @@ export default function Poesie() {
       ]);
       if (!alive) return;
       let carnet = data && Array.isArray(data.poems) ? data : { poems: [] };
-      // Un fragment #v=1&data=… l'emporte : c'est le sens d'ouvrir un lien
-      // partagé. Les poèmes locaux de même titre sont remplacés, les autres
-      // conservés.
+      // Un fragment #v=1&data=… apporte des poèmes, il n'en reprend aucun :
+      // celui qui ouvre le lien a déjà un carnet, et c'est le sien qui reste
+      // la référence (mergeShared). Les réglages du lien, eux, s'appliquent :
+      // ils décrivent comment l'expéditeur veut qu'on lise son recueil.
       try {
+        const data = extractShareData(window.location.hash);
         const shared = await libraryFromHash(window.location.hash);
         if (!alive) return;
         if (shared) {
-          carnet = { ...carnet, ...shared, poems: mergeByTitle(carnet.poems, shared.poems) };
+          if (data) seenShareRef.current.add(data);
+          const m = mergeShared(carnet.poems, shared.poems);
+          carnet = { ...carnet, ...shared, poems: m.poems };
           syncHashRef.current = true;
-          setStatus(`${shared.poems.length} poème(s) chargé(s) depuis l'URL.`);
+          setStatus(sharedStatus(m));
         }
       } catch (e) {
         setStatus("Le lien contenait des données illisibles ou incompatibles — carnet local conservé. ("
@@ -1803,6 +1929,7 @@ export default function Poesie() {
     return () => { alive = false; };
   }, []);
 
+  useEffect(() => { poemsRef.current = poems; }, [poems]);
   useEffect(() => { if (ready) saveLibrary({ poems, size, speed, sort, sortDir, barOpen, theme, listFilter }); },
     [poems, size, speed, sort, sortDir, barOpen, theme, listFilter, ready]);
   useEffect(() => { if (ready) saveTags(tags); }, [tags, ready]);
@@ -1822,6 +1949,39 @@ export default function Poesie() {
   // Un effet ne doit rien renvoyer d'autre qu'une fonction de nettoyage.
   useEffect(() => (window.offline ? window.offline.subscribe(setOffline) : undefined), []);
   useEffect(() => { if (view === "settings" && window.offline) window.offline.refresh(); }, [view]);
+
+  /* Un lien reçu alors que l'app est DÉJÀ ouverte : le navigateur ne recharge
+     pas le document quand seul le fragment change — même page, autre # —,
+     l'effet de démarrage ne rejoue donc pas et les poèmes du lien n'entraient
+     nulle part. On les fusionne à chaud, aux mêmes conditions qu'au
+     démarrage. (replaceState, par quoi passent la synchro d'URL et « Copier
+     l'URL », ne déclenche pas hashchange : ce qui arrive ici vient bien du
+     dehors.) */
+  useEffect(() => {
+    if (!ready) return undefined;
+    const onHash = async () => {
+      const data = extractShareData(window.location.hash);
+      if (!data || seenShareRef.current.has(data)) return;
+      seenShareRef.current.add(data);
+      try {
+        const shared = await libraryFromHash(window.location.hash);
+        if (!shared) return;
+        const m = mergeShared(poemsRef.current, shared.poems);
+        if (m.added) setPoems(m.poems);
+        if (shared.lists) setLists((l) => mergeLists(l, shared.lists));
+        syncHashRef.current = true;
+        setStatus(sharedStatus(m));
+        // On ne tire quelqu'un de sa lecture que si le lien a vraiment apporté
+        // quelque chose — et le bandeau qui l'annonce vit sur la bibliothèque.
+        if (m.added) setView("lib");
+      } catch (e) {
+        setStatus("Le lien contenait des données illisibles ou incompatibles — carnet conservé. ("
+          + String(e && e.message ? e.message : e).slice(0, 120) + ")");
+      }
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, [ready]);
 
   // La barre d'adresse n'est réécrite qu'une fois le partage activé
   // (ouverture d'un lien #data=… ou « Copier l'URL ») : elle reflète alors
@@ -2459,15 +2619,28 @@ export default function Poesie() {
   const restoreDefaultTags = () => setTags((t) => mergeTags(t, { defs: DEFAULT_TAGS.map((d) => ({ ...d })), byKey: {} }));
   const missingDefaults = DEFAULT_TAGS.some((d) => !tags.defs.some((x) => x.id === d.id));
 
-  const importLibrary = (list, settings, addedTags, addedLists) => {
+  /** Le passage obligé des imports de la page Transfert. Deux régimes, et la
+   *  différence tient à qui fait autorité : une SAUVEGARDE remet l'appareil
+   *  dans un état connu (mergeByTitle — ce qu'elle apporte prime) ; un carnet
+   *  REÇU — URL de partage, code collé — ne fait qu'ajouter (mergeShared).
+   *  Renvoie ce qui est entré, pour que la page puisse le dire. */
+  const importLibrary = (list, settings, addedTags, addedLists, shared) => {
     if (addedTags) setTags((t) => mergeTags(t, addedTags));
     if (addedLists) setLists((l) => mergeLists(l, addedLists));
-    setPoems((prev) => mergeByTitle(prev, list));
+    let res = { added: list.length, known: 0 };
+    if (shared) {
+      const m = mergeShared(poemsRef.current, list);
+      res = { added: m.added, known: m.known };
+      setPoems(m.poems);
+    } else {
+      setPoems((prev) => mergeByTitle(prev, list));
+    }
     if (settings) {
       if (settings.size) setSize(settings.size);
       if (settings.speed) setSpeed(settings.speed);
       if (["title", "author", "memo"].includes(settings.sort)) setSort(settings.sort);
     }
+    return res;
   };
   /** Les poèmes rapportés de Wikisource. Même contrat que l'import de
    *  fichier : mergeByTitle, et un mot dans le bandeau de la bibliothèque. */
