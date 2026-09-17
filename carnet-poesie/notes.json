@@ -1,0 +1,24 @@
+{
+ "version": "46a65bea",
+ "at": "2026-09-17T21:55:23.249Z",
+ "entries": [
+  {
+   "pr": 63,
+   "date": "2026-09-17",
+   "title": "Poésie : un lien de partage ajoute des poèmes, il n'en remplace aucun",
+   "detail": "Ouvrir un #v=1&data=… ne touche plus au carnet de celui qui l'ouvre : mergeShared n'enlève et ne réécrit rien, il ajoute."
+  },
+  {
+   "pr": 62,
+   "date": "2026-09-06",
+   "title": "Notation d'apprentissage ligne à ligne (carnet d'accords et poésie)",
+   "detail": "Le score d'une chanson (d'un poème) n'était qu'une impression d'ensemble : un pas d'EMA à chaque réponse, sans souvenir de CE qui avait été su ou raté."
+  },
+  {
+   "pr": 58,
+   "date": "2026-09-03",
+   "title": "Carnet de poésie : nouvel artefact, lire et réciter des poèmes",
+   "detail": "Un frère du Carnet d'accords, pour la poésie. Tout le noyau de mémorisation est repris tel quel — révision, scoring EMA, tirages pondérés, tags,…"
+  }
+ ]
+}
