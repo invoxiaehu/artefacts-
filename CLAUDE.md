@@ -496,6 +496,42 @@ probablement là-bas aussi.
   Sans lui, deux poèmes sans `id` sont le même poème pour toute la
   navigation (la révision au hasard tourne en rond).
 
+### Recevoir un carnet — le lien AJOUTE
+
+Divergence assumée avec le carnet d'accords (décision du propriétaire) :
+ouvrir un `#v=1&data=…` **n'enlève et ne réécrit jamais rien**
+(`mergeShared`). Le carnet de l'appareil reste la référence, les poèmes du
+lien s'y ajoutent.
+
+- L'identité d'un poème reçu est son **texte** (`bodyKey`, même réduction que
+  `lineKey`), jamais son titre : un poème déjà là au caractère près n'apporte
+  rien et n'est pas repris. C'est ce qui rend l'opération **répétable** — une
+  app installée depuis un lien relance le même fragment à chaque ouverture, et
+  sans ce garde-fou elle se dupliquerait indéfiniment.
+- Même titre, texte différent → les **deux** sont gardés, le nouveau venu
+  prend un « (2) » (`variantTitle`) : sans suffixe ils partageraient leur
+  `poemKey`, donc leurs tags et leurs listes. La variante hérite de la mémoire
+  vers à vers **et de la note** de l'appareil — le score d'un ami dit ce que
+  lui a appris, pas vous.
+- `mergeByTitle` reste le régime de la **restauration d'un fichier** : une
+  sauvegarde est autoritaire, elle remet l'appareil dans son état.
+- Le bandeau dit ce qui est entré et ce qui était déjà là (`sharedStatus`) :
+  un lien qui n'ajoute rien doit le dire, sans quoi on le croit cassé.
+- **App déjà ouverte** : changer de fragment ne recharge pas le document,
+  l'effet de démarrage ne rejoue donc pas — un écouteur `hashchange` fait la
+  même fusion à chaud (et ne sort de la lecture en cours que s'il a vraiment
+  ajouté quelque chose). `replaceState`, par quoi passent la synchro d'URL et
+  « Copier l'URL », ne déclenche pas l'événement ; `seenShareRef` écarte les
+  allers-retours par les flèches du navigateur.
+- **Sur iPhone, un lien reçu ne rejoint pas l'app installée** : une app de
+  l'écran d'accueil garde un stockage **séparé de Safari**, où le lien
+  s'ouvre. D'où « Coller un lien reçu » dans Transfert
+  (`navigator.clipboard.readText()` appelé dans le geste, iOS pose sa propre
+  confirmation) et le mot qui l'explique. Décocher « Ouvrir en tant qu'app
+  web » à l'installation supprimerait la séparation, mais exposerait le carnet
+  à l'effacement des 7 jours de WebKit (les apps installées en sont exemptées,
+  pas les pages Safari) : à ne pas conseiller.
+
 ### Import Wikisource
 
 `fr.wikisource.org/w/api.php` avec `origin=*` répond
